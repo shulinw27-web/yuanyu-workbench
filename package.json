@@ -1,0 +1,24 @@
+{
+  "name": "yuanyu-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "description": "元域个人工作台 Agent：本机浏览器执行与个人业务工作流",
+  "type": "module",
+  "main": "src/main.mjs",
+  "scripts": {
+    "start": "node scripts/launch.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:desktop": "node scripts/launch.mjs --smoke",
+    "check": "node scripts/check.mjs",
+    "pack": "node scripts/pack.mjs",
+    "service": "node scripts/service.mjs",
+    "service:admin": "node scripts/service-admin.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "electron": "43.7.9"
+  },
+  "license": "MIT"
+}

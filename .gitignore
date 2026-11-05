@@ -1,0 +1,25 @@
+node_modules/
+.playwright-cli/
+output/
+dist/
+release/
+.env*
+*.log
+*.local.json
+data/
+credentials*
+!docs/*
+
+# Local runtime databases, credentials and signing material
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.key
+*.pem
+*.pfx
+*.p12
+*.keystore
+*.jks
+*.secret
+*.secrets
