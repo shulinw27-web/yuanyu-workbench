@@ -236,13 +236,13 @@ function renderPlan() {
   if (!state.plan) return;
   const plan = state.plan;
   if (plan.kind === 'browser') {
-    const heading = append(element('div', 'plan-heading'), element('span', 'flow-icon', '▦'), element('h3', '', '确认浏览器任务'), element('span', 'tag', plan.mode === 'mock_browser' ? '合成模型 · 本机演示' : '模型 · 所选页面'));
+    const heading = append(element('div', 'plan-heading'), element('span', 'flow-icon', '▦'), element('h3', '', '确认浏览器任务'), element('span', 'tag', plan.skillId ? '本机只读重放' : plan.mode === 'mock_browser' ? '合成模型 · 本机演示' : '模型 · 所选页面'));
     append(target, heading, element('p', 'plan-request', plan.goal));
     if (plan.skillId) target.append(element('p', 'plan-meta', `浏览器流程 v${plan.skillVersion || 1}${Object.keys(plan.values || {}).length ? ` · ${Object.entries(plan.values).map(([name, value]) => `${name}：${value}`).join('；')}` : ''}`));
     const steps = element('div', 'plan-steps');
     for (const [index, text] of [`访问已授权站点：${plan.siteIds.map((id) => agentSites().find((site) => site.id === id)?.label || id).join('、')}`, '在允许来源与路径内导航、观察并读取页面', '登录、验证码和多因素验证交给你操作', '仅整理可见资料，不提交业务变更'].entries()) steps.append(append(element('div', 'plan-step'), element('span', '', `0${index + 1}`), text));
     target.append(steps);
-    const modeText = plan.mode === 'mock_browser' ? '合成模型演示，不向外部发送页面' : '将本条任务文本和所选页面内容发送给已配置模型';
+    const modeText = plan.skillId ? '仅在本机重放已保存步骤，不发送模型，不消耗推广额度' : plan.mode === 'mock_browser' ? '合成模型演示，不向外部发送页面' : '将本条任务文本和所选页面内容发送给已配置模型';
     target.append(append(element('div', 'plan-footer'), element('p', 'plan-meta', modeText), append(element('div'), button('暂不执行', 'button secondary small', () => { state.plan = null; render(); }), button('确认执行', 'button primary small', startRun, { disabled: isLocked() }))));
     return;
   }
@@ -491,14 +491,43 @@ function openDemonstrationDialog() {
   $('#demonstration-start-error').hidden = true; renderDemonstrationSites(); $('#demonstration-dialog').showModal(); $('#demonstration-goal').focus();
 }
 
+function renderReplayProgress(task) {
+  if (!task.skillId) return null;
+  const replay = task.replay;
+  const valid = replay && Number.isInteger(replay.stepIndex) && Number.isInteger(replay.total) && replay.total > 0 && replay.total <= 100 && replay.stepIndex >= 0 && replay.stepIndex < replay.total;
+  const recoverySteps = list(task.steps).filter(step => /^recovery-\d+-1$/.test(step.id || '') && step.status === 'completed');
+  const errorCode = typeof task.error === 'object' ? task.error?.code : '';
+  const needsReview = task.status === 'failed' && ['PAGE_STRUCTURE_CHANGED', 'STALE_REFERENCE'].includes(errorCode);
+  if (!valid && !recoverySteps.length && !needsReview) return null;
+  const box = element('section', 'replay-status'); box.setAttribute('aria-label', '只读工作流进度');
+  if (valid) {
+    const status = { executing: '正在执行', recovering: '正在刷新引用', completed: '步骤已完成', awaiting_user: '等待登录或验证', failed: '此步已停止' }[replay.state] || '等待检查';
+    const tool = { open: '打开站点', observe: '读取当前页面', click: '只读点击', fill: '填写查询条件', select: '选择筛选条件' }[replay.tool] || '只读操作';
+    append(box, append(element('div', 'replay-status-heading'), element('strong', '', `只读工作流 · 第 ${replay.stepIndex + 1} / ${replay.total} 步`), element('span', 'tag', status)), element('p', 'replay-step-description', tool));
+    const progress = element('progress', 'replay-progress'); progress.max = replay.total;
+    progress.value = replay.state === 'completed' ? replay.stepIndex + 1 : replay.stepIndex;
+    progress.setAttribute('aria-label', `已完成 ${progress.value} / ${replay.total} 个步骤`); box.append(progress);
+    if (replay.state === 'recovering') box.append(element('p', 'replay-recovery-note', '页面引用已变化，正在重新观察并唯一定位当前控件。此步骤最多刷新一次，之前成功的步骤不会在本轮重复。'));
+    else if (replay.state === 'failed' && replay.reason === 'STALE_REFERENCE') box.append(element('p', 'replay-recovery-note', '重新观察后引用仍失效，已停止当前步骤。请检查页面后重新运行。'));
+  }
+  if (recoverySteps.length) box.append(element('p', 'replay-recovered', `本轮有 ${recoverySteps.length} 个步骤重新观察后完成；每个步骤最多刷新一次。`));
+  if (needsReview) {
+    box.append(element('p', 'replay-review-note', errorCode === 'PAGE_STRUCTURE_CHANGED' ? '当前页面缺少原控件，或有多个同名控件，流程已停止。请核对页面；必要时重新示范并保存流程，再确认参数运行。' : '页面持续变化，有限刷新已停止。请检查当前页面，确认参数后重新运行。'));
+    const skill = agentSkills().find(skill => skill.id === task.skillId);
+    if (skill) box.append(button('检查并重新运行', 'button secondary small replay-review-run', () => planAgentSkill(skill), { disabled: isLocked() }));
+  }
+  return box;
+}
+
 function renderAgentTask(task) {
   const panel = element('article', 'run-panel browser-task-panel');
   const taught = task.execution === 'demonstration';
   const heading = append(element('div', 'run-heading'), element('h3', '', task.goal || '浏览器任务'), statusNode(task.status));
   if (['running', 'awaiting_user', 'interrupted'].includes(task.status) && !(taught && task.status === 'interrupted')) heading.append(button('取消任务', 'button secondary small', () => mutation(taught ? 'demo.cancel' : 'agent.cancel', { id: task.id }, taught ? '已取消示范。' : '已取消浏览器任务。'), { disabled: state.actionPending }));
-  append(panel, heading, element('p', 'run-caption', `${taught ? '人工示范 · 本机记录只读步骤' : task.mode === 'mock_browser' ? '合成模型 · 本机浏览器演示' : '模型浏览器任务'} · ${dateText(task.createdAt)}`));
+  append(panel, heading, element('p', 'run-caption', `${taught ? '人工示范 · 本机记录只读步骤' : task.skillId ? '个人工作流 · 本机只读重放' : task.mode === 'mock_browser' ? '合成模型 · 本机浏览器演示' : '模型浏览器任务'} · ${dateText(task.createdAt)}`));
   if (task.message) panel.append(element('p', 'agent-message', task.message));
   if (task.error) panel.append(element('p', 'run-error', typeof task.error === 'string' ? task.error : task.error.message || '任务未完成。'));
+  const replayProgress = renderReplayProgress(task); if (replayProgress) panel.append(replayProgress);
   const steps = list(task.steps);
   if (steps.length) {
     const disclosure = element('details', 'steps-disclosure');
@@ -515,7 +544,8 @@ function renderAgentTask(task) {
   if (!taught && ['awaiting_user', 'interrupted'].includes(task.status)) {
     const box = element('div', 'handoff-card');
     append(box, element('strong', '', task.status === 'awaiting_user' ? '需要你在浏览器中操作' : '任务已中断'), element('p', '', task.status === 'awaiting_user' ? '请在独立浏览器窗口完成登录或验证，再点击继续。' : '检查当前页面后，可继续尝试。任务不会自动恢复执行。'));
-    if (task.mode === 'compatible_browser') box.append(element('p', 'form-note', '继续会再次按已选择范围发送任务文本和页面内容。'));
+    if (task.skillId) box.append(element('p', 'form-note', '继续会从头执行已确认的只读步骤，并重新读取当前页面；本次不发送模型。'));
+    else if (task.mode === 'compatible_browser') box.append(element('p', 'form-note', '继续会再次按已选择范围发送任务文本和页面内容。'));
     const controls = append(element('div', 'inline-actions'), button('继续任务', 'button primary small', () => resumeAgentTask(task), { disabled: state.actionPending }));
     if (task.awaitingSiteId) controls.append(button('打开浏览器', 'text-button', () => browserAction('browser.handoff', task.awaitingSiteId), { disabled: state.actionPending }));
     box.append(controls);
@@ -641,6 +671,7 @@ function renderSites() {
 
 function renderModel() {
   const model = state.snapshot.model || {};
+  const localReplay = Boolean(state.plan?.skillId || agentTasks().some(task => task.id === state.activeRunId && task.skillId && ['running', 'awaiting_user'].includes(task.status)));
   const ready = model.status === 'ready';
   const labels = { not_configured: '未配置', disabled: '已停用', ready: '已配置', invalid: '配置无效' };
   $('#model-status').textContent = labels[model.status] || '未配置';
@@ -654,11 +685,11 @@ function renderModel() {
   if (!browserReady && state.plannerMode === 'compatible_browser') state.plannerMode = 'preset';
   $('#planner-mode').value = state.plannerMode;
   $('#planner-mode').disabled = isLocked() || state.planning;
-  $('#model-consent-row').hidden = !['model', 'compatible_browser'].includes(state.plannerMode);
+  $('#model-consent-row').hidden = localReplay || !['model', 'compatible_browser'].includes(state.plannerMode);
   const destination = model.model ? `“${model.model}”` : '已配置模型';
   $('#model-consent-description').textContent = state.plannerMode === 'compatible_browser' ? `同意将本条任务文本发送给${destination}。` : `同意将本条任务文本及公开配方定义发送给${destination}。`;
   $('#model-consent').checked = state.modelConsent;
-  $('#page-consent-row').hidden = state.plannerMode !== 'compatible_browser';
+  $('#page-consent-row').hidden = localReplay || state.plannerMode !== 'compatible_browser';
   $('#page-consent').checked = state.pageConsent;
   $('#choose-agent-sites').hidden = !browserMode();
   $('#choose-agent-sites').textContent = `站点 ${state.selectedSiteIds.length}/3`;
@@ -668,6 +699,7 @@ function renderModel() {
   $('#runtime-mode').textContent = { model: '模型采购规划', preset: '预设流程', mock_browser: '合成模型 · 浏览器', compatible_browser: '模型浏览器任务' }[state.plannerMode];
   $('#composer-hint').textContent = state.plannerMode === 'mock_browser' ? '合成模型只用于本机交互演示，不向外部发送页面。' : state.plannerMode === 'compatible_browser' ? '仅在所选站点内只读操作。登录和验证由你接管。' : '执行前会展示计划，由你确认。';
   if (product()?.modelSource === 'sponsored' && ['model', 'compatible_browser'].includes(state.plannerMode)) $('#composer-hint').textContent += ` ${quotaMessage()}`;
+  if (localReplay) { $('#runtime-mode').textContent = '本机只读重放'; $('#composer-hint').textContent = '按已确认的站点、流程版本和参数重放，不发送模型，不消耗推广额度。'; }
   $('#model-configure').disabled = state.actionPending;
   $('#model-refresh').disabled = state.actionPending;
 }
@@ -897,10 +929,7 @@ function planAgentSkill(skill, values) {
   state.selectedSiteIds = skillSiteIds(skill).slice(0, 3);
   const registered = agentSites().filter((site) => state.selectedSiteIds.includes(site.id));
   const bindings = list(skill.siteBindings || skill.template?.siteBindings);
-  const requiresModel = [...registered, ...bindings].some((site) => String(site.origin || '').startsWith('https:'));
-  const mode = requiresModel || state.plannerMode === 'compatible_browser' ? 'compatible_browser' : 'mock_browser';
-  if (mode === 'compatible_browser' && !(state.snapshot.model?.status === 'ready' && state.snapshot.model?.dataScope === 'selected_pages')) { toast('此流程需要已配置并允许所选页面范围的模型。请先检查设置。', true); navigate('settings', true); return; }
-  state.plannerMode = mode;
+  const mode = [...registered, ...bindings].some((site) => String(site.origin || '').startsWith('https:')) ? 'compatible_browser' : 'mock_browser';
   state.modelConsent = false;
   state.pageConsent = false;
   if (!state.selectedSiteIds.length) { toast('这个流程没有有效站点绑定，请重新选择站点。', true); navigate('settings', true); return; }
@@ -967,7 +996,7 @@ function openAgentSaveDialog(task) {
 
 async function resumeAgentTask(task) {
   if (state.actionPending) return;
-  if (task.mode === 'compatible_browser' && (!state.modelConsent || !state.pageConsent)) {
+  if (!task.skillId && task.mode === 'compatible_browser' && (!state.modelConsent || !state.pageConsent)) {
     state.plannerMode = 'compatible_browser';
     navigate('workspace');
     render();
@@ -975,7 +1004,7 @@ async function resumeAgentTask(task) {
     return;
   }
   state.activeRunId = task.id;
-  await mutation('agent.resume', { id: task.id, consent: agentConsent(task.mode) }, '已继续浏览器任务。');
+  await mutation('agent.resume', { id: task.id, ...(!task.skillId ? { consent: agentConsent(task.mode) } : {}) }, task.skillId ? '已从头重放已确认的只读步骤。' : '已继续浏览器任务。');
 }
 
 async function browserAction(action, siteId) {
@@ -1115,12 +1144,12 @@ async function startRun() {
   if (!state.plan?.supported || isLocked()) return;
   const plan = state.plan;
   if (plan.kind !== 'browser' && !hasCredentials()) return;
-  if (plan.kind === 'browser' && plan.mode === 'compatible_browser' && (!state.modelConsent || !state.pageConsent)) { toast('请先确认发送本条任务文本和所选页面内容的授权。', true); return; }
+  if (plan.kind === 'browser' && !plan.skillId && plan.mode === 'compatible_browser' && (!state.modelConsent || !state.pageConsent)) { toast('请先确认发送本条任务文本和所选页面内容的授权。', true); return; }
   state.actionPending = true;
   render();
   try {
     let data;
-    if (plan.kind === 'browser') data = await invoke(plan.skillId ? 'agent.skill.run' : 'agent.start', plan.skillId ? { id: plan.skillId, mode: plan.mode, consent: agentConsent(plan.mode), values: plan.values || {}, expectedVersion: plan.skillVersion } : { goal: plan.goal, siteIds: plan.siteIds, mode: plan.mode, consent: agentConsent(plan.mode) });
+    if (plan.kind === 'browser') data = await invoke(plan.skillId ? 'agent.skill.run' : 'agent.start', plan.skillId ? { id: plan.skillId, mode: plan.mode, values: plan.values || {}, expectedVersion: plan.skillVersion } : { goal: plan.goal, siteIds: plan.siteIds, mode: plan.mode, consent: agentConsent(plan.mode) });
     else {
       const payload = { month: plan.month };
       if (plan.workflowId) payload.workflowId = plan.workflowId;

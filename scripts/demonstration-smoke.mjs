@@ -6,6 +6,7 @@ import {createController,safeError} from '../src/controller.mjs';
 import {createPromotionService} from '../src/service/index.mjs';
 import {createProductClient} from '../src/product/client.mjs';
 import {startInteractiveMockSite} from '../src/mock/interactive-fixture.mjs';
+import {createInteractiveBrowser} from '../src/browser/interactive.mjs';
 import {tmpdir} from 'node:os';
 import {resolve} from 'node:path';
 
@@ -17,6 +18,7 @@ export async function runDemonstrationSmoke({BrowserWindow,cryptoAdapter,systems
   const privateDir=join(dataDir,'demo-learning-client');
   const productClient=createProductClient({dataDir:privateDir,cryptoAdapter,baseUrl:service.url,allowLocalDemo:true});
   const windows=[],updates=[],calls=[];
+  let injectStale=false,injected=0,staleFailures=0;
   function ControlledWindow(options){const win=new BrowserWindow(options);windows.push(win);return win;}
   const ui=new BrowserWindow({show:false,width:1440,height:1000,webPreferences:{preload:join(root,'src/preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false,offscreen:true}});
   const uiUrl=pathToFileURL(join(root,'src/ui/index.html')).href;
@@ -41,7 +43,19 @@ export async function runDemonstrationSmoke({BrowserWindow,cryptoAdapter,systems
     await until(async()=>!contents.isLoadingMainFrame()&&new URL(contents.getURL()).pathname==='/records'&&await contents.executeJavaScript("!!document.querySelector('[data-authenticated]')"),'human records');
   }
   try{
-    controller=await createController({dataDir:privateDir,cryptoAdapter,systems,productClient,BrowserWindow:ControlledWindow,builtinSites:[fixture.site],browserShow:false,onUpdate:state=>{updates.push(state);if(!ui.isDestroyed())ui.webContents.send('workbench:update',state);}});
+    controller=await createController({dataDir:privateDir,cryptoAdapter,systems,productClient,BrowserWindow:ControlledWindow,builtinSites:[fixture.site],browserShow:false,
+      interactiveFactory:options=>{
+        const browser=createInteractiveBrowser(options);
+        return {...browser,act:async(siteId,action)=>{
+          // Invalidate an observed reference in the real fixture DOM before the first replay action.
+          // The production browser must reject it before acting; the replay layer then observes once more.
+          if(injectStale&&injected===0&&action.type==='select'){
+            injected++;
+            await businessWindow().webContents.executeJavaScript(`(()=>{if(location.origin!==${JSON.stringify(fixture.site.origin)})throw Error('FIXTURE_ONLY');document.querySelector('select').setAttribute('data-recovery-fixture','changed')})()`);
+          }
+          try{return await browser.act(siteId,action);}catch(error){if(error.code==='STALE_REFERENCE')staleFailures++;throw error;}
+        }};
+      },onUpdate:state=>{updates.push(state);if(!ui.isDestroyed())ui.webContents.send('workbench:update',state);}});
     ipcMain.handle('workbench:invoke',async(event,action,payload)=>{
       if(event.sender!==ui.webContents||event.senderFrame!==ui.webContents.mainFrame||event.senderFrame.url!==uiUrl)return {ok:false,error:{code:'IPC_DENIED'}};
       calls.push(action);try{return {ok:true,data:await controller.invoke(action,payload)};}catch(error){return {ok:false,error:safeError(error)};}
@@ -77,16 +91,22 @@ export async function runDemonstrationSmoke({BrowserWindow,cryptoAdapter,systems
     const skill=await until(async()=>(await controller.snapshot()).agentSkills.find(skill=>skill.name==='人工示范月度查询'),'save skill');
     const stepIndex=skill.template.recipe.findIndex(entry=>entry.tool==='select');assert.ok(stepIndex>=0);
     const edited=await invoke('agent.skill.edit',{id:skill.id,expectedVersion:1,parameters:[{name:'month',stepIndex,label:'查询月份',defaultValue:'2026-09'}]});
+    injectStale=true;
     stage='replay';const replay=await invoke('agent.skill.run',{id:skill.id,mode:'mock_browser',expectedVersion:edited.version,values:{month:'2026-10'}});
     await until(async()=>(await controller.snapshot()).agentTasks.find(task=>task.id===replay.taskId)?.status==='awaiting_user','replay login');
     await humanLogin();await invoke('agent.resume',{id:replay.taskId});await taskState(replay.taskId,'completed');
     assert.ok(await businessWindow().webContents.executeJavaScript("document.querySelector('tbody').textContent.includes('SYN-101')&&document.querySelector('tbody').textContent.includes('12345')"));
     const state=await controller.snapshot(),disk=await readFile(join(privateDir,'agents',state.identity.companyId,state.identity.userId,'state.json'),'utf8');
+    assert.equal(injected,1);assert.equal(staleFailures,1,'浏览器必须实际拒绝过期引用，再由重放层有界恢复');
+    const recovered=state.agentTasks.find(task=>task.id===replay.taskId);
+    assert.equal(recovered.replay.state,'completed');
+    assert.ok(recovered.steps.some(step=>step.id.startsWith('recovery-')&&step.status==='completed'),'恢复尝试应记录为完成步骤');
+    assert.ok(updates.some(update=>update.agentTasks.some(task=>task.id===replay.taskId&&task.replay?.state==='recovering'&&task.replay.retries===1)));
     assert.equal(state.product.usage.dailyRequestsUsed,0);assert.equal(state.product.usage.usedTokens,0);
     for(const secret of ['interactive123','246810','hidden-fixture-token','visible-token-secret','visible-query-secret'])assert.ok(!JSON.stringify(updates).includes(secret));
     for(const value of ['SYN-091','SYN-101'])assert.ok(!disk.includes(value));
     assert.ok(calls.includes('demo.start')&&calls.includes('demo.act')&&calls.includes('demo.finish')&&calls.includes('agent.skill.save'));
-    console.log('PASS 受控示范：真实注册UI→登录/MFA→人工选择9月与筛选→最新结果确认→保存Skill→参数改10月实际网页重放；未调用模型、未扣额度、未落盘网页/凭据。');
+    console.log('PASS 受控示范与恢复：真实UI录9月→保存Skill→改10月→真实DOM变更导致旧ref拒绝→仅当前步骤重新观察重试1次→实际网页结果；未调用模型、未扣额度、未落盘网页/引用。');
   }finally{ipcMain.removeHandler('workbench:invoke');await controller?.close();ui.destroy();for(const win of windows)if(!win.isDestroyed())win.destroy();await fixture.close();await service.close();}
 }
 

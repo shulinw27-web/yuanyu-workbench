@@ -51,7 +51,7 @@ export function createAgentRuntime({store,getSites,getBrowser,isCurrent,authoriz
     if(active||startup)throw fail('BUSY');
     let settled;const pending={cancelled:false,settled:new Promise(resolve=>{settled=resolve;})};startup=pending;
     try {
-      const accepted=consentFor(mode,consent),siteBindings=await checkedSites(siteIds,mode);
+      const accepted=skill?{taskText:false,pageContent:false}:consentFor(mode,consent),siteBindings=await checkedSites(siteIds,mode);
       if((skill&&JSON.stringify(siteBindings)!==JSON.stringify(skill.template.siteBindings)) || (previous&&JSON.stringify(siteBindings)!==JSON.stringify(previous.siteBindings)))throw fail('AGENT_BINDINGS_CHANGED');
       if(previous?.skillId&&(previous.skillVersion??1)!==skill?.version)throw fail('AGENT_SKILL_VERSION_CHANGED');
       const parameterValues=skill?resolveSkillParameters(skill,previous?previous.parameterValues:values):undefined;
@@ -109,7 +109,17 @@ export function createAgentRuntime({store,getSites,getBrowser,isCurrent,authoriz
           }
           let result;
           if(skill){
-            result=await replayRecipe({recipe,browser:wrapped,check,signal:token.abort.signal});
+            result=await replayRecipe({recipe,browser:wrapped,check,signal:token.abort.signal,
+              onProgress:async replay=>{await update({status:'running',steps:[...steps],trace:[...trace],replay});},
+              onRecovery:async replay=>{
+                const id=`recovery-${replay.stepIndex}-1`,index=steps.findIndex(step=>step.id===id);
+                const status=({recovering:'running',completed:'completed',failed:'failed',awaiting_user:'awaiting_user'}[replay.state]);
+                const label=replay.state==='completed'?'页面引用变化，已重新观察并恢复当前步骤':replay.state==='failed'?'当前步骤无法在一次引用恢复后继续':replay.state==='awaiting_user'?'引用恢复遇到登录，请人工接管':'页面引用变化，正在重新观察当前步骤';
+                const entry={id,label,status,detail:`第 ${replay.stepIndex+1}/${replay.total} 步；最多恢复 1 次`,tool:replay.tool,siteId:replay.siteId};
+                if(index<0)steps.push(entry);else steps[index]=entry;
+                await update({status:'running',steps:[...steps],trace:[...trace]});
+              }
+            });
           }else result=await runBrowserToolLoop({task:goal,allowedSiteIds:siteIds,consent:accepted,browser:wrapped,requestModel,checkContext:context,signal:token.abort.signal,maxSteps:12,onCheckpoint:async cp=>{
             const id=`step-${cp.step}`,index=steps.findIndex(s=>s.id===id);
             const label=cp.tool?({browser_open:'打开授权站点',browser_observe:'读取当前页面',browser_act:'执行只读页面操作',browser_handoff:'等待用户登录或验证'}[cp.tool]):'整理下一步';
@@ -151,20 +161,74 @@ export function createAgentRuntime({store,getSites,getBrowser,isCurrent,authoriz
 }
 
 // Replay resolves a fresh unique accessible locator, never a stale ref or arbitrary selector.
-export async function replayRecipe({recipe,browser,check,signal}) {
-  let reads=0;const observed=new Map();
-  for(const entry of recipe){
-    if(signal?.aborted)throw fail('CANCELLED');await check();
-    if(entry.tool==='open'){await browser.open(entry.siteId);observed.delete(entry.siteId);continue;}
-    const page=entry.tool==='observe'||!observed.has(entry.siteId)?await browser.observe(entry.siteId):observed.get(entry.siteId);
-    if(page.elements.some(e=>e.credential)){await browser.handoff(entry.siteId);return {status:'awaiting_user',siteId:entry.siteId,message:'请完成该站点登录或验证，再继续只读工作流。'};}
-    reads++;
-    if(entry.tool==='observe'){observed.set(entry.siteId,page);continue;}
-    const matches=page.elements.filter(e=>!e.credential&&role(e)===entry.locator.role&&e.label===entry.locator.name);
-    if(matches.length!==1)throw fail('PAGE_STRUCTURE_CHANGED');
-    await browser.act(entry.siteId,{type:entry.tool,ref:matches[0].ref,...(entry.value!==undefined?{value:entry.value}:{})});
-    observed.delete(entry.siteId);
+export async function replayRecipe({recipe,browser,check,signal,onProgress=async()=>{},onRecovery=async()=>{}}) {
+  if(!Array.isArray(recipe)||!recipe.length)throw fail('AGENT_RESULT_UNVERIFIED');
+  let reads=0;const observed=new Map(),dirty=new Set(),total=recipe.length;
+  const guard=async()=>{if(signal?.aborted)throw fail('CANCELLED');await check();if(signal?.aborted)throw fail('CANCELLED');};
+  const progress=async(state,entry,stepIndex,retries=0,reason)=>{
+    const value={stepIndex,total,tool:entry.tool,siteId:entry.siteId,retries,state,...(reason?{reason}:{})};
+    await guard();await onProgress(value);await guard();return value;
+  };
+  const recovery=async(state,entry,index,reason='STALE_REFERENCE')=>{
+    const value=await progress(state,entry,index,1,reason);
+    await onRecovery(value);await guard();
+  };
+  const read=async siteId=>{
+    await guard();const page=await browser.observe(siteId);await guard();
+    if(!page||!Array.isArray(page.elements))throw fail('PAGE_STRUCTURE_CHANGED');
+    observed.set(siteId,page);
+    if(!page.elements.some(element=>element.credential)){dirty.delete(siteId);reads++;}
+    return page;
+  };
+  const handoff=async(entry,index,retries)=>{
+    await progress('awaiting_user',entry,index,retries,'LOGIN_REQUIRED');
+    if(retries)await onRecovery({stepIndex:index,total,tool:entry.tool,siteId:entry.siteId,retries,state:'awaiting_user',reason:'LOGIN_REQUIRED'});
+    await guard();await browser.handoff(entry.siteId);await guard();
+    return {status:'awaiting_user',siteId:entry.siteId,message:'请完成该站点登录或验证，再继续只读工作流。继续时会从新观察安全重放，不使用旧页面引用。'};
+  };
+  for(let index=0;index<recipe.length;index++){
+    const entry=recipe[index];await progress('executing',entry,index);
+    if(entry.tool==='open'){
+      await guard();await browser.open(entry.siteId);await guard();observed.delete(entry.siteId);dirty.add(entry.siteId);
+      await progress('completed',entry,index);continue;
+    }
+    let page=entry.tool==='observe'||!observed.has(entry.siteId)?await read(entry.siteId):observed.get(entry.siteId);
+    if(page.elements.some(element=>element.credential))return handoff(entry,index,0);
+    if(entry.tool==='observe'){await progress('completed',entry,index);continue;}
+    let retries=0;
+    while(true){
+      await guard();
+      const matches=page.elements.filter(element=>!element.credential&&role(element)===entry.locator.role&&element.label===entry.locator.name);
+      if(matches.length!==1){
+        if(retries)await recovery('failed',entry,index,'PAGE_STRUCTURE_CHANGED');else await progress('failed',entry,index,0,'PAGE_STRUCTURE_CHANGED');
+        throw fail('PAGE_STRUCTURE_CHANGED');
+      }
+      try{
+        await browser.act(entry.siteId,{type:entry.tool,ref:matches[0].ref,...(entry.value!==undefined?{value:entry.value}:{})});
+      }catch(error){
+        await guard();
+        // STALE_REFERENCE is emitted before the browser executes an action. Other failures may have acted.
+        if(error.code!=='STALE_REFERENCE'||retries===1){
+          if(retries)await recovery('failed',entry,index);else await progress('failed',entry,index);
+          throw error;
+        }
+        retries=1;observed.delete(entry.siteId);await recovery('recovering',entry,index);
+        try{page=await read(entry.siteId);}catch(readError){await recovery('failed',entry,index);throw readError;}
+        if(page.elements.some(element=>element.credential))return handoff(entry,index,retries);
+        continue;
+      }
+      await guard();observed.delete(entry.siteId);dirty.add(entry.siteId);
+      if(retries)await recovery('completed',entry,index);else await progress('completed',entry,index);
+      break;
+    }
   }
-  if(!reads)throw fail('AGENT_RESULT_UNVERIFIED');
-  return {status:'completed',message:'已在当前授权站点重新观察并执行个人工作流的只读步骤；页面数据可能已变化，请核对当前结果。'};
+  // Every controlled navigation/action must have a later non-login observation, including the final action.
+  for(const siteId of dirty){
+    const index=total-1,entry={tool:'observe',siteId};await progress('executing',entry,index);
+    const page=await read(siteId);
+    if(page.elements.some(element=>element.credential))return handoff(entry,index,0);
+    await progress('completed',entry,index);
+  }
+  await guard();if(!reads)throw fail('AGENT_RESULT_UNVERIFIED');
+  return {status:'completed',message:'已在当前授权站点重新观察并执行个人工作流的只读步骤，并读取最新结果；请核对当前页面。'};
 }

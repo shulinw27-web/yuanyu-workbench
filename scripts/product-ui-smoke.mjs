@@ -57,8 +57,19 @@ export async function runProductUISmoke({BrowserWindow}) {
       return {ok:true,data:skill};
     }
     if(action==='agent.skill.run') {
+      if(payload.id==='https-local-skill') {
+        assert.equal(payload.expectedVersion,1);assert.equal(payload.mode,'compatible_browser');assert.deepEqual(payload.values,{month:'2026-10'});
+        assert.equal(Object.hasOwn(payload,'consent'),false,'本机重放不能借用模型页面发送同意');
+        snapshot.agentTasks=[{id:'https-local-replay',kind:'browser',skillId:payload.id,skillVersion:1,goal:'本人HTTPS查询流程',mode:payload.mode,status:'running',createdAt:new Date().toISOString(),steps:[],replay:{stepIndex:1,total:4,tool:'select',siteId:'site-https',retries:0,state:'executing'}}];snapshot.busy=true;
+        return {ok:true,data:{taskId:'https-local-replay'}};
+      }
       assert.equal(payload.expectedVersion,2);assert.equal(payload.mode,'mock_browser');assert.deepEqual(payload.values,{month:'2026-10'});
       return {ok:true,data:{taskId:'synthetic-replay-task'}};
+    }
+    if(action==='agent.resume') {
+      assert.deepEqual(payload,{id:'https-local-replay'},'已保存Skill继续无需页面外发同意');
+      snapshot.agentTasks[0].status='running';snapshot.agentTasks[0].replay={stepIndex:0,total:4,tool:'open',siteId:'site-https',retries:0,state:'executing'};snapshot.busy=true;
+      return {ok:true,data:{taskId:'https-local-replay'}};
     }
     if(action==='demo.start') {
       assert.equal(payload.mode,'mock_browser');assert.deepEqual(payload.siteIds,['site-synthetic']);
@@ -218,6 +229,52 @@ export async function runProductUISmoke({BrowserWindow}) {
     await evaluate(`[...document.querySelectorAll('#task-plan button')].find(button=>button.textContent==='确认执行').click()`);
     await wait(`document.querySelector('#task-plan').hidden`);
     assert.equal(calls.filter(c=>c.action==='agent.skill.run').length,1);
+    const configuredModel=structuredClone(snapshot.model);
+    snapshot.model={status:'not_configured',mode:'compatible',dataScope:'task_text'};
+    snapshot.agentSites.push({id:'site-https',label:'本人HTTPS查询站点',origin:'https://synthetic-business.example.invalid',revision:1,builtin:false});
+    snapshot.agentSkills.push({id:'https-local-skill',name:'本人HTTPS只读查询',kind:'browser',version:1,pinned:false,source:{taskId:'synthetic-verified-source'},template:{goalTemplate:'本人HTTPS查询流程',siteBindings:[{id:'site-https',origin:'https://synthetic-business.example.invalid',revision:1}],recipe:[{tool:'open',siteId:'site-https'},{tool:'select',siteId:'site-https',locator:{role:'combobox',name:'查询月份',readOnly:true},value:'2026-09'},{tool:'click',siteId:'site-https',locator:{role:'button',name:'筛选',readOnly:true}},{tool:'observe',siteId:'site-https'}],parameters:[{name:'month',label:'查询月份',stepIndex:1,defaultValue:'2026-09'}]}});
+    win.webContents.send('workbench:update',snapshot);
+    await click('.nav-item[data-view="workflows"]');
+    await evaluate(`[...document.querySelectorAll('#workflow-list article')].find(card=>card.querySelector('h3')?.textContent==='本人HTTPS只读查询').querySelector('button.button.primary').click()`);
+    await wait(`document.querySelector('#agent-run-dialog').open`);
+    await evaluate(`document.querySelector('#agent-run-param-0').value='2026-10';document.querySelector('#agent-run-form').requestSubmit()`);
+    await wait(`!document.querySelector('#task-plan').hidden && document.querySelector('#task-plan').textContent.includes('本机只读重放')`);
+    assert.match(await evaluate(`document.querySelector('#task-plan').textContent`),/不发送模型，不消耗推广额度/);
+    assert.equal(await evaluate(`document.querySelector('#browser-model-mode-option').disabled`),true,'未配置模型时新模型浏览器任务仍不可用');
+    assert.equal(await evaluate(`document.querySelector('#model-consent-row').hidden && document.querySelector('#page-consent-row').hidden`),true);
+    await evaluate(`[...document.querySelectorAll('#task-plan button')].find(button=>button.textContent==='确认执行').click()`);
+    await wait(`document.querySelector('#active-run .replay-status')?.textContent.includes('第 2 / 4 步')`);
+    const replayTask=snapshot.agentTasks[0];
+    replayTask.replay={...replayTask.replay,state:'recovering',retries:1,reason:'STALE_REFERENCE'};win.webContents.send('workbench:update',snapshot);
+    await wait(`document.querySelector('#active-run .replay-recovery-note')?.textContent.includes('最多刷新一次')`);
+    assert.match(await evaluate(`document.querySelector('#active-run .replay-recovery-note').textContent`),/之前成功的步骤不会在本轮重复/);
+    replayTask.steps=[{id:'recovery-1-1',label:'页面引用变化，已重新观察并恢复当前步骤',status:'completed',tool:'select',siteId:'site-https'}];replayTask.replay={stepIndex:2,total:4,tool:'click',siteId:'site-https',retries:0,state:'executing'};
+    win.webContents.send('workbench:update',snapshot);
+    await wait(`document.querySelector('#active-run .replay-recovered')?.textContent.includes('1 个步骤')`);
+    await evaluate(`document.querySelector('#active-run .replay-status').scrollIntoView({block:'center'})`);await capture('product-replay-recovery');
+    for(const [width,height]of [[1920,1080],[1440,900],[1366,768],[1024,768],[780,640],[390,844]]){
+      win.setContentSize(width,height);await evaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+      assert.equal(await evaluate(`document.documentElement.scrollWidth<=innerWidth`),true,`replay recovery overflow at ${width}`);
+    }
+    win.setContentSize(1440,900);
+    replayTask.status='completed';replayTask.replay={...replayTask.replay,stepIndex:3,tool:'observe',state:'completed'};snapshot.busy=false;win.webContents.send('workbench:update',snapshot);
+    await wait(`document.querySelector('#active-run .replay-progress')?.value===4`);
+    replayTask.status='failed';replayTask.error={code:'PAGE_STRUCTURE_CHANGED',message:'页面控件无法唯一匹配'};replayTask.replay={...replayTask.replay,stepIndex:2,tool:'click',state:'failed',reason:'PAGE_STRUCTURE_CHANGED'};win.webContents.send('workbench:update',snapshot);
+    await wait(`document.querySelector('#active-run .replay-review-note')?.textContent.includes('多个同名控件')`);
+    const replayCalls=calls.filter(call=>call.action==='agent.skill.run').length;
+    await click('#active-run .replay-review-run');await wait(`document.querySelector('#agent-run-dialog').open`);
+    assert.equal(calls.filter(call=>call.action==='agent.skill.run').length,replayCalls,'检查重新运行入口不能直接执行');await click('#agent-run-dialog .close-dialog');
+    replayTask.status='awaiting_user';delete replayTask.error;replayTask.replay={...replayTask.replay,state:'awaiting_user',reason:'LOGIN_REQUIRED'};win.webContents.send('workbench:update',snapshot);
+    await wait(`document.querySelector('#active-run').textContent.includes('继续会从头执行已确认的只读步骤')`);
+    assert.equal(await evaluate(`document.querySelector('#active-run').textContent.includes('继续会再次按已选择范围发送')`),false);
+    await evaluate(`[...document.querySelectorAll('#active-run button')].find(button=>button.textContent==='继续任务').click()`);
+    await wait(`document.querySelector('#active-run .replay-status')?.textContent.includes('第 1 / 4 步')`);
+    assert.equal(calls.filter(call=>call.action==='agent.resume').length,1);assert.equal(calls.filter(call=>call.action==='model.test').length,1);
+    const identityBefore=structuredClone(snapshot.identity),productBefore=structuredClone(snapshot.product);
+    win.webContents.send('workbench:update',{...snapshot,identity:null,product:{...snapshot.product,authenticated:false},agentTasks:[],agentSkills:[],busy:false});
+    await wait(`document.body.classList.contains('product-locked') && document.querySelector('.replay-status')===null`);
+    snapshot.identity=identityBefore;snapshot.product=productBefore;snapshot.model=configuredModel;snapshot.agentTasks=[];snapshot.busy=false;
+    win.webContents.send('workbench:update',snapshot);await wait(`!document.body.classList.contains('product-locked')`);
     const startDemonstration=async()=>{
       await click('.nav-item[data-view="workspace"]');await click('#demonstration-open');
       await wait(`document.querySelector('#demonstration-dialog').open`);
@@ -281,7 +338,7 @@ export async function runProductUISmoke({BrowserWindow}) {
     await wait(`document.querySelector('#demonstration-dialog').open`);
     assert.equal(await evaluate(`document.querySelector('#demonstration-goal').value`),'按月份查看合成资料');
     await click('#demonstration-dialog .close-dialog');
-    assert.equal(calls.filter(call=>call.action==='agent.resume').length,0);
+    assert.equal(calls.filter(call=>call.action==='agent.resume').length,1,'中断示范不能新增普通模型继续调用');
     await click('.nav-item[data-view="settings"]');
     for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[1024,768],[780,640],[390,844]]) {
       win.setContentSize(width,height);
@@ -326,7 +383,7 @@ export async function runProductUISmoke({BrowserWindow}) {
     assert.equal(await evaluate(`document.body.textContent.includes('旧身份私有查询')`),false);
     assert.equal(await evaluate(`document.querySelector('#demonstration-goal').value`),'');
     assert.equal(errors.length,0,errors.join('\n'));
-    console.log('SMOKE product UI: 个人/企业入口、注册/额度、模型费用确认、合成写入与参数化、受控人工示范/登录接管/新引用/二次核对/保存/取消/中断，以及 6 档布局通过（合成 IPC）。');
+    console.log('SMOKE product UI: 个人/企业入口、注册/额度、模型费用确认、合成写入与参数化、受控人工示范，以及无模型HTTPS Skill/有限引用恢复进度/登录从头重放/页面异常检查/身份清理与 6 档布局通过（合成 IPC）。');
   } finally {ipcMain.removeHandler('workbench:invoke');win.destroy();}
 }
 

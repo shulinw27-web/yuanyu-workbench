@@ -99,3 +99,13 @@ UI负责界面文件 src/ui/*；不直接访问Node和文件系统。凭据表�
 - AgentStore任务新增可选`execution:'demonstration'`，兼容既有schema。仅保存安全trace和步骤，不能从普通agent.resume接入模型。重启后遗留录制/接管示范转为interrupted，用户直接重新示范，原记录保留；不承诺复原原生网页操作或旧会话。
 
 自定义站点可执行哪些操作仍由浏览器策略决定；未配置只读点击规则的自定义站点不会因人工示范自动开放按钮。示范是在工作台中选择允许的控件，不监听或录制网页中的任意手势。
+
+## 只读重放的有界引用恢复
+
+已保存Skill的本机步骤重放不创建模型requester，不要求模型配置、任务文本/页面外发同意；账号授权、精确站点与修订校验保持。新建兼容模型任务仍须模型配置和逐次双同意。
+
+- replayRecipe仅对当前动作抛出的STALE_REFERENCE重新观察并重定位一次；此前成功操作不重复。重新观察后必须唯一匹配原角色/名称，不能凭相似文字猜测，也不自动改写原Skill。
+- 来源变化、撤权、取消、写入策略拒绝、网络/未知回执及模型错误不自动重试。重试前后均复验上下文；再次过期即停止。
+- 登录页交给用户处理；显式继续仍按新观察安全重放，不宣称跨登录/进程保留精确业务状态。末尾有动作未读取的站点须重新观察；不能沿用旧页面宣布完成。
+- 任务可选replay元数据：stepIndex（0-based）、total（1—100）、tool、siteId、retries（0/1）、state（executing/recovering/completed/awaiting_user/failed）、可选reason（STALE_REFERENCE/PAGE_STRUCTURE_CHANGED/LOGIN_REQUIRED）。仅绑定Skill任务可写，站点必须属于任务，拒绝额外字段、页面、ref。
+- 每次成功和恢复尝试采用当前attempt写回；resume与重开遗留运行清除旧进度。恢复步骤单独记录在steps，UI区分执行步骤与重新观察尝试。

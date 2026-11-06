@@ -52,3 +52,19 @@ test('示范不能由模型任务继续，切换身份取消原记录且不向�
   const task=(await c.snapshot()).agentTasks.find(task=>task.id===taskId);assert.equal(task.status,'cancelled');
   await assert.rejects(c.invoke('agent.resume',{id:taskId}),/DEMONSTRATION_RESUME_REQUIRED/);
 });
+
+test('本人HTTPS站点教出的Skill无需模型配置或页面外发同意即可本机重放',async t=>{
+  const f=await fixture(t),c=f.controller;f.login();
+  const siteId='site-readonly';
+  await c.invoke('site.register',{id:siteId,label:'个人查询站点',origin:'https://read-only.example.invalid',entryPath:'/',paths:['/']});
+  let demo=await c.invoke('demo.start',{goal:'按月份查看本人资料',siteIds:[siteId],mode:'compatible_browser'});
+  const select=demo.page.elements.find(element=>element.role==='combobox');
+  await c.invoke('demo.act',{id:demo.taskId,siteId,action:{type:'select',ref:select.ref,value:'2026-09'}});
+  await c.invoke('demo.finish',{id:demo.taskId,confirmed:true});
+  const skill=await c.invoke('agent.skill.save',{taskId:demo.taskId,name:'本机查询',pinned:false});
+  assert.equal((await c.snapshot()).model.status,'not_configured');
+  const replay=await c.invoke('agent.skill.run',{id:skill.id,mode:'compatible_browser',expectedVersion:skill.version});
+  await c.waitForIdle();
+  const task=(await c.snapshot()).agentTasks.find(task=>task.id===replay.taskId);
+  assert.equal(task.status,'completed',JSON.stringify(task.error));assert.equal(f.counts().modelCalls,0);
+});

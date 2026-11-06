@@ -136,8 +136,22 @@ function taskView(task) {
 }
 /** Trusted runtime preflight: reject non-replayable inputs before acting on a page. */
 export function validateAgentTrace(input, siteBindings) { return trace(input, siteBindings); }
+function replayProgress(input,task){
+  fields(input,['stepIndex','total','tool','siteId','retries','state','reason']);
+  assert(task.skillId&&task.execution!=='demonstration','AGENT_REPLAY_INVALID','重放进度仅属于已保存工作流的运行。');
+  assert(Number.isSafeInteger(input.total)&&input.total>=1&&input.total<=100
+    &&Number.isSafeInteger(input.stepIndex)&&input.stepIndex>=0&&input.stepIndex<input.total,
+  'AGENT_REPLAY_INVALID','重放步骤范围无效。');
+  assert(['open','observe','click','fill','select'].includes(input.tool)
+    &&task.siteBindings.some(site=>site.id===input.siteId)
+    &&Number.isSafeInteger(input.retries)&&input.retries>=0&&input.retries<=1
+    &&['executing','recovering','completed','awaiting_user','failed'].includes(input.state),
+  'AGENT_REPLAY_INVALID','重放进度格式无效。');
+  if(input.reason!==undefined)assert(['STALE_REFERENCE','PAGE_STRUCTURE_CHANGED','LOGIN_REQUIRED'].includes(input.reason),'AGENT_REPLAY_INVALID','重放原因无效。');
+  return clone(input);
+}
 function validateTask(task) {
-  fields(task, ['id', 'kind', 'goal', 'mode', 'execution', 'skillId','skillVersion','parameterValues', 'status', 'steps', 'message', 'error', 'awaitingSiteId', 'trace', 'siteBindings', 'createdAt', 'updatedAt', 'finishedAt', 'sessionId', 'attempt']);
+  fields(task, ['id', 'kind', 'goal', 'mode', 'execution', 'skillId','skillVersion','parameterValues', 'replay', 'status', 'steps', 'message', 'error', 'awaitingSiteId', 'trace', 'siteBindings', 'createdAt', 'updatedAt', 'finishedAt', 'sessionId', 'attempt']);
   identifier(task.id);
   assert(task.kind === 'browser' && STATUSES.has(task.status) && MODES.has(task.mode)
     && Number.isSafeInteger(task.attempt) && task.attempt >= 1, 'AGENT_STORE_INVALID', '浏览器任务类型或状态无效。');
@@ -154,6 +168,7 @@ function validateTask(task) {
     assert(task.skillId&&plain(task.parameterValues)&&Object.keys(task.parameterValues).length<=12,'AGENT_STORE_INVALID','工作流运行参数无效。');
     for(const [name,value]of Object.entries(task.parameterValues)){assert(/^[a-z][a-z0-9_]{0,31}$/.test(name)&&!['constructor','prototype','__proto__'].includes(name));text(value,200,0);}
   }
+  if(task.replay!==undefined)replayProgress(task.replay,task);
   if (task.message !== undefined) text(task.message, 2000, 0);
   if (task.error !== undefined) {
     fields(task.error, ['code', 'message']);
@@ -277,8 +292,10 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
           Object.assign(task, { status: 'interrupted', message: task.execution==='demonstration'?'上次示范已中断，请重新开始示范。':'上次浏览器任务被中断，请由用户选择继续。', updatedAt: now() });
           task.finishedAt = task.updatedAt;
           delete task.awaitingSiteId;
+          delete task.replay;
           interrupted = true;
         }
+        if(task.status==='awaiting_user'&&task.sessionId!==root.sessionId&&task.replay!==undefined){delete task.replay;interrupted=true;}
       }
       if (interrupted) await atomicJSON(file, state);
       return callback(state, () => atomicJSON(file, state));
@@ -328,7 +345,7 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
     },
     updateTask(id, patch) {
       return operation(async (state, save) => {
-        fields(patch, ['status', 'steps', 'message', 'error', 'awaitingSiteId', 'trace', 'expectedAttempt']);
+        fields(patch, ['status', 'steps', 'message', 'error', 'awaitingSiteId', 'trace', 'replay', 'expectedAttempt']);
         const task = taskById(state, id);
         assert(!STOPPED.has(task.status), 'AGENT_TASK_TERMINAL', '已停止任务不能接收迟到结果，请由用户显式继续。');
         if (patch.expectedAttempt !== undefined) assert(patch.expectedAttempt === task.attempt, 'AGENT_TASK_STALE', '此结果来自旧一轮任务。');
@@ -339,6 +356,7 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
         if (patch.steps !== undefined) next.steps = steps(patch.steps);
         if (patch.message !== undefined) next.message = text(patch.message, 2000, 0);
         if (patch.trace !== undefined) next.trace = trace(patch.trace, task.siteBindings);
+        if(patch.replay!==undefined)next.replay=replayProgress(patch.replay,task);
         if (patch.error !== undefined) {
           assert(['failed', 'cancelled', 'interrupted'].includes(patch.status), 'AGENT_INPUT_INVALID', '仅失败或中断任务可以记录错误。');
           fields(patch.error, ['code', 'message']);
@@ -389,6 +407,7 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
         delete task.error;
         delete task.awaitingSiteId;
         delete task.message;
+        delete task.replay;
         await save();
         return taskView(task);
       });
