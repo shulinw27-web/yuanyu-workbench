@@ -11,7 +11,7 @@ const state = {
   view: 'workspace', filter: 'all', plan: null, actionPending: false, planning: false,
   switching: false, switchTarget: null, activeRunId: null, connected: false,
   expandedSteps: new Set(), request: '', plannerMode: 'preset', modelConsent: false, pageConsent: false, selectedSiteIds: [], agentSitesChosen: false,
-  entryPanel: 'choices', authTab: 'register', authPending: false, demoVerificationCode: '', modelTestResult: '', writePreview: null,
+  entryPanel: 'choices', authTab: 'register', authPending: false, demoVerificationCode: '', modelTestResult: '', writePreview: null, demonstrationSiteIds: [],
 };
 let toastTimer;
 let confirmCallback;
@@ -131,8 +131,8 @@ function acceptSnapshot(snapshot) {
 }
 
 function clearAccountView() {
-  state.entryPanel = 'choices'; state.demoVerificationCode = ''; state.modelTestResult = ''; state.writePreview = null; state.plan = null; state.activeRunId = null; state.request = ''; state.modelConsent = false; state.pageConsent = false; state.selectedSiteIds = []; state.agentSitesChosen = false; state.expandedSteps.clear();
-  for (const selector of ['#task-form', '#credential-form', '#model-profile-form', '#product-auth-form', '#entry-verify-form', '#settings-verify-form', '#save-workflow-form', '#edit-workflow-form', '#write-demo-form', '#agent-edit-form', '#agent-run-form']) $(selector).reset();
+  state.entryPanel = 'choices'; state.demoVerificationCode = ''; state.modelTestResult = ''; state.writePreview = null; state.plan = null; state.activeRunId = null; state.request = ''; state.modelConsent = false; state.pageConsent = false; state.selectedSiteIds = []; state.agentSitesChosen = false; state.demonstrationSiteIds = []; state.expandedSteps.clear();
+  for (const selector of ['#task-form', '#credential-form', '#model-profile-form', '#product-auth-form', '#entry-verify-form', '#settings-verify-form', '#save-workflow-form', '#edit-workflow-form', '#write-demo-form', '#agent-edit-form', '#agent-run-form', '#demonstration-form']) $(selector).reset();
   for (const dialog of $$('dialog')) if (dialog.open) dialog.close();
   confirmCallback = undefined;
   $('#toast').hidden = true;
@@ -386,11 +386,117 @@ function renderRuns() {
   }
 }
 
+function renderDemonstration(task) {
+  const box = element('section', 'demonstration-panel');
+  box.dataset.taskId = task.id;
+  const view = state.snapshot.demonstration;
+  if (!view || view.taskId !== task.id) return append(box, element('p', 'form-note', '示范记录当前不可操作。请取消后重新开始，不复用上次页面引用。'));
+  const locked = state.actionPending || state.authPending || state.switching || productLocked() || view.operationPending;
+  const page = view.page;
+  const siteId = view.currentSiteId || view.siteIds?.[0];
+  const sites = element('select', 'text-input demonstration-site');
+  sites.setAttribute('aria-label', '当前示范站点');
+  for (const id of list(view.siteIds)) {
+    const option = element('option', '', agentSites().find(site => site.id === id)?.label || id);
+    option.value = id; option.selected = id === siteId; sites.append(option);
+  }
+  sites.disabled = locked || view.status === 'awaiting_user';
+  const refreshButton = button('打开并观察', 'button secondary small demonstration-observe', () => demonstrationAction('demo.observe', { id: task.id, siteId: sites.value }), { disabled: locked || view.status === 'awaiting_user' });
+  append(box, append(element('div', 'demonstration-toolbar'), sites, refreshButton), element('p', 'form-note', '在这里选择允许的查询、筛选操作；每次操作后重新观察。不会记录你在登录窗口中的账号或验证码。'));
+  if (view.status === 'awaiting_user') {
+    append(box, append(element('div', 'handoff-card'), element('strong', '', '请在独立浏览器中完成登录或验证'), element('p', '', '完成后返回这里继续，工作台将重新观察当前页面。'), button('继续示范', 'button primary small demonstration-resume', () => demonstrationAction('demo.resume', { id: task.id }), { disabled: locked })));
+    return box;
+  }
+  if (page) {
+    box.append(element('h4', 'demonstration-page-title', page.title || agentSites().find(site => site.id === siteId)?.label || '当前页面'));
+    if (page.loginRequired) box.append(element('p', 'form-note', '当前页面包含登录或验证控件，普通示范操作暂不可用。'));
+    else {
+      const observation = append(element('details', 'demonstration-observation'), element('summary', '', '查看当前页面文字'));
+      observation.append(element('pre', 'observation-content', page.text || '当前页面没有可显示文字。')); box.append(observation);
+    }
+    const candidates = list(page.elements).filter(item => item && typeof item.ref === 'string' && !item.credential && list(item.actionKinds).some(kind => ['click', 'fill', 'select'].includes(kind)));
+    if (!page.loginRequired && candidates.length) {
+      const form = element('form', 'demonstration-action-form');
+      const label = element('label', 'field-label', '选择当前页面的只读控件');
+      const control = element('select', 'text-input demonstration-element'); control.setAttribute('aria-label', '示范操作控件');
+      for (const item of candidates) { const option = element('option', '', item.name || item.role || '未命名控件'); option.value = item.ref; control.append(option); }
+      const fields = element('div', 'demonstration-action-fields');
+      const submit = button('执行并记录', 'button primary small demonstration-act', null, { disabled: locked }); submit.type = 'submit';
+      const updateFields = () => {
+        fields.replaceChildren();
+        const selected = candidates.find(item => item.ref === control.value), kinds = list(selected?.actionKinds).filter(kind => ['click', 'fill', 'select'].includes(kind));
+        const kind = element('select', 'text-input demonstration-action-kind'); kind.setAttribute('aria-label', '只读操作类型');
+        for (const value of kinds) { const option = element('option', '', { click: '只读点击', fill: '填写查询条件', select: '选择筛选条件' }[value]); option.value = value; kind.append(option); }
+        fields.append(kind);
+        const valueArea = element('div', 'demonstration-value-area'); fields.append(valueArea);
+        const updateValue = () => {
+          valueArea.replaceChildren(); if (kind.value === 'click') return;
+          valueArea.append(element('label', 'field-label', kind.value === 'select' ? '筛选条件' : '查询内容'));
+          const options = list(selected?.options);
+          const input = kind.value === 'select' && options.length ? element('select', 'text-input demonstration-value') : element('input', 'text-input demonstration-value');
+          input.setAttribute('aria-label', kind.value === 'select' ? '筛选条件' : '查询内容');
+          if (input.tagName === 'INPUT') { input.type = 'text'; input.maxLength = 200; input.autocomplete = 'off'; input.placeholder = '仅填写查询条件，不要输入凭据'; }
+          else for (const item of options) { const option = element('option', '', item.label || ''); option.value = item.label || ''; input.append(option); }
+          input.disabled = locked; valueArea.append(input);
+        };
+        kind.disabled = locked; kind.addEventListener('change', updateValue); updateValue();
+      };
+      control.disabled = locked; control.addEventListener('change', updateFields); updateFields();
+      form.addEventListener('submit', event => {
+        event.preventDefault(); if (locked) return;
+        const type = $('.demonstration-action-kind', fields)?.value;
+        const action = { type, ref: control.value };
+        if (type !== 'click') action.value = $('.demonstration-value', fields)?.value ?? '';
+        demonstrationAction('demo.act', { id: task.id, siteId: page.siteId || siteId, action });
+      });
+      append(form, label, control, fields, append(element('div', 'inline-actions'), submit)); box.append(form);
+    } else if (!page.loginRequired) box.append(element('p', 'form-note', '此页面没有已授权的只读操作。可重新观察、切换所选站点，或取消示范。'));
+  }
+  const actions = element('div', 'demonstration-footer');
+  actions.append(button('接管登录或验证', 'text-button demonstration-handoff', () => demonstrationAction('demo.handoff', { id: task.id, siteId }), { disabled: locked }));
+  actions.append(button('已核对，完成示范', 'button secondary small demonstration-finish', () => confirmAction('完成这次示范', '请确认已核对当前页面结果。完成后可将已执行的只读步骤保存为个人工作流；不会保存页面正文或凭据。', '确认完成示范', () => demonstrationAction('demo.finish', { id: task.id, confirmed: true }), false), { disabled: locked || !view.canFinish }));
+  box.append(actions); if (!view.canFinish) box.append(element('p', 'form-note', '至少执行一次可记录操作并取得最新页面结果后，才能确认完成。'));
+  return box;
+}
+
+async function demonstrationAction(action, payload) {
+  if (state.actionPending || state.switching || productLocked()) return;
+  state.actionPending = true; render();
+  try { await invoke(action, payload); await refresh(); }
+  catch (error) { toast(error.message, true); await refresh().catch(() => {}); }
+  finally { state.actionPending = false; render(); }
+}
+
+function renderDemonstrationSites() {
+  const mode = $('#demonstration-mode').value;
+  const available = agentSites().filter(site => mode === 'mock_browser' ? Boolean(site.builtin) : !site.builtin && String(site.origin || '').startsWith('https:'));
+  state.demonstrationSiteIds = state.demonstrationSiteIds.filter(id => available.some(site => site.id === id));
+  if (!state.demonstrationSiteIds.length && available.length === 1) state.demonstrationSiteIds = [available[0].id];
+  const target = $('#demonstration-sites'); target.replaceChildren();
+  for (const site of available) {
+    const checkbox = element('input'); checkbox.type = 'checkbox'; checkbox.value = site.id; checkbox.checked = state.demonstrationSiteIds.includes(site.id);
+    checkbox.disabled = !checkbox.checked && state.demonstrationSiteIds.length >= 3;
+    checkbox.addEventListener('change', () => { state.demonstrationSiteIds = checkbox.checked ? [...state.demonstrationSiteIds, site.id].slice(0, 3) : state.demonstrationSiteIds.filter(id => id !== site.id); renderDemonstrationSites(); });
+    target.append(append(element('label', 'agent-site-choice'), checkbox, append(element('div'), element('strong', '', site.label || site.id), element('p', '', site.origin || ''))));
+  }
+  $('#demonstration-sites-note').textContent = available.length ? `已选择 ${state.demonstrationSiteIds.length}/3 个站点。只在所选来源和路径内示范。` : '当前没有此范围内的站点，请先到“系统与账号”添加受控 HTTPS 站点。';
+  $('#demonstration-start').disabled = state.actionPending || !state.demonstrationSiteIds.length;
+}
+
+function openDemonstrationDialog() {
+  if (isLocked()) return;
+  $('#demonstration-form').reset(); $('#demonstration-goal').value = $('#task-input').value.trim();
+  state.demonstrationSiteIds = [];
+  if (!agentSites().some(site => site.builtin)) $('#demonstration-mode').value = 'compatible_browser';
+  $('#demonstration-start-error').hidden = true; renderDemonstrationSites(); $('#demonstration-dialog').showModal(); $('#demonstration-goal').focus();
+}
+
 function renderAgentTask(task) {
   const panel = element('article', 'run-panel browser-task-panel');
+  const taught = task.execution === 'demonstration';
   const heading = append(element('div', 'run-heading'), element('h3', '', task.goal || '浏览器任务'), statusNode(task.status));
-  if (['running', 'awaiting_user', 'interrupted'].includes(task.status)) heading.append(button('取消任务', 'button secondary small', () => mutation('agent.cancel', { id: task.id }, '已取消浏览器任务。'), { disabled: state.actionPending }));
-  append(panel, heading, element('p', 'run-caption', `${task.mode === 'mock_browser' ? '合成模型 · 本机浏览器演示' : '模型浏览器任务'} · ${dateText(task.createdAt)}`));
+  if (['running', 'awaiting_user', 'interrupted'].includes(task.status) && !(taught && task.status === 'interrupted')) heading.append(button('取消任务', 'button secondary small', () => mutation(taught ? 'demo.cancel' : 'agent.cancel', { id: task.id }, taught ? '已取消示范。' : '已取消浏览器任务。'), { disabled: state.actionPending }));
+  append(panel, heading, element('p', 'run-caption', `${taught ? '人工示范 · 本机记录只读步骤' : task.mode === 'mock_browser' ? '合成模型 · 本机浏览器演示' : '模型浏览器任务'} · ${dateText(task.createdAt)}`));
   if (task.message) panel.append(element('p', 'agent-message', task.message));
   if (task.error) panel.append(element('p', 'run-error', typeof task.error === 'string' ? task.error : task.error.message || '任务未完成。'));
   const steps = list(task.steps);
@@ -404,7 +510,9 @@ function renderAgentTask(task) {
     disclosure.append(rows);
     panel.append(disclosure);
   }
-  if (['awaiting_user', 'interrupted'].includes(task.status)) {
+  if (taught && ['running', 'awaiting_user'].includes(task.status)) panel.append(renderDemonstration(task));
+  if (taught && task.status === 'interrupted') panel.append(append(element('div', 'handoff-card'), element('strong', '', '示范已中断'), element('p', '', '重启后不会恢复旧页面引用。原记录会保留，你可以直接重新示范。'), button('重新示范', 'button primary small', () => { $('#task-input').value = task.goal || ''; openDemonstrationDialog(); }, { disabled: isLocked() })));
+  if (!taught && ['awaiting_user', 'interrupted'].includes(task.status)) {
     const box = element('div', 'handoff-card');
     append(box, element('strong', '', task.status === 'awaiting_user' ? '需要你在浏览器中操作' : '任务已中断'), element('p', '', task.status === 'awaiting_user' ? '请在独立浏览器窗口完成登录或验证，再点击继续。' : '检查当前页面后，可继续尝试。任务不会自动恢复执行。'));
     if (task.mode === 'compatible_browser') box.append(element('p', 'form-note', '继续会再次按已选择范围发送任务文本和页面内容。'));
@@ -954,6 +1062,7 @@ function render() {
   $('#task-input').disabled = state.switching || isRunning();
   $('#task-month').disabled = state.switching || isRunning();
   $('#try-example').disabled = isLocked();
+  $('#demonstration-open').disabled = !state.connected || isLocked();
   $('#new-workflow').disabled = isLocked();
   renderQuickWorkflows();
   renderPlan();
@@ -1265,6 +1374,20 @@ $$('[data-workflow-filter]').forEach((node) => node.addEventListener('click', ()
   $$('[data-workflow-filter]').forEach((item) => item.classList.toggle('selected', item === node));
   renderWorkflows();
 }));
+$('#demonstration-open').addEventListener('click', openDemonstrationDialog);
+$('#demonstration-mode').addEventListener('change', () => { state.demonstrationSiteIds = []; renderDemonstrationSites(); });
+$('#demonstration-form').addEventListener('submit', async event => {
+  event.preventDefault(); if (isLocked()) return;
+  const goal = $('#demonstration-goal').value.trim();
+  if (!goal || !state.demonstrationSiteIds.length) return;
+  const payload = { goal, mode: $('#demonstration-mode').value, siteIds: [...state.demonstrationSiteIds] };
+  state.actionPending = true; $('#demonstration-start').disabled = true; $('#demonstration-start-error').hidden = true; render();
+  try {
+    const value = await invoke('demo.start', payload); state.activeRunId = value?.taskId || null; state.request = goal; state.plan = null;
+    $('#demonstration-dialog').close(); $('#demonstration-form').reset(); $('#task-input').value = ''; await refresh();
+  } catch (error) { $('#demonstration-start-error').textContent = error.message; $('#demonstration-start-error').hidden = false; }
+  finally { state.actionPending = false; render(); renderDemonstrationSites(); }
+});
 $('#task-form').addEventListener('submit', (event) => { event.preventDefault(); generatePlan($('#task-input').value, $('#task-month').value); });
 $('#task-input').addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {

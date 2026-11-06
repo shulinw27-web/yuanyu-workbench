@@ -86,3 +86,16 @@ UI负责界面文件 src/ui/*；不直接访问Node和文件系统。凭据表�
 ## 个人开源分发范围
 
 本分支不包含企业OIDC和HTTP共享适配器；本文相关契约保留为跨版本设计参考，实际代码在`codex/enterprise`。个人注册服务、模型配置与执行器保留，公司Mock仅作合成测试。详见[版本说明](EDITIONS.md)。
+
+## 工作台受控人工示范（2026-11-06）
+
+`snapshot.demonstration`为当前身份的易失视图或null：taskId/mode/status/siteIds/currentSiteId/page/canFinish/operationPending。page仅主进程内存与受信UI使用，含经清洗的title/text和安全控件ref/role/name/actionKinds/options，不落盘、不发送模型。账号失效时整体隐藏。
+
+- `demo.start{goal,siteIds,mode}`先确认1—3个授权站点；mode为mock_browser或compatible_browser。与采购、模型任务、站点和模型配置变更互斥。自动打开首站；登录/MFA仅人工接管。
+- `demo.observe{id,siteId}`重新打开/观察所选站点；`demo.act{id,siteId,action:{type,ref,value?}}`仅接收当前观察的fill/select/白名单只读click。名称/角色必须唯一并可复用，敏感控件/查询值在动作前拒绝，每次动作自动重新观察。
+- `demo.handoff{id,siteId}`、`demo.resume{id}`：登录操作不记录；resume只继续本次进程仍存活的示范，重建观察，不使用旧ref。
+- `demo.finish{id,confirmed:true}`需至少一次成功操作和最新非登录结果；逐个重读已打开站点，内容或结构变化则刷新视图并要求再次核对。完成后可由原有agent.skill.save保存，编辑参数与重放沿用原契约。
+- `demo.cancel{id}`与通用取消/退出/切身份清理原身份任务和会话。错误id不能取消另一条启动中的任务。IO与授权有操作时限，取消/撤权抑制迟到成功；完成写盘后的最终授权失败用仅可信主进程可调用的同attempt负向收尾，不暴露IPC、不修改已保存Skill的来源记录。
+- AgentStore任务新增可选`execution:'demonstration'`，兼容既有schema。仅保存安全trace和步骤，不能从普通agent.resume接入模型。重启后遗留录制/接管示范转为interrupted，用户直接重新示范，原记录保留；不承诺复原原生网页操作或旧会话。
+
+自定义站点可执行哪些操作仍由浏览器策略决定；未配置只读点击规则的自定义站点不会因人工示范自动开放按钮。示范是在工作台中选择允许的控件，不监听或录制网页中的任意手势。

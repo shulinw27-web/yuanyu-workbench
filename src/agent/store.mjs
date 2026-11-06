@@ -137,11 +137,12 @@ function taskView(task) {
 /** Trusted runtime preflight: reject non-replayable inputs before acting on a page. */
 export function validateAgentTrace(input, siteBindings) { return trace(input, siteBindings); }
 function validateTask(task) {
-  fields(task, ['id', 'kind', 'goal', 'mode', 'skillId','skillVersion','parameterValues', 'status', 'steps', 'message', 'error', 'awaitingSiteId', 'trace', 'siteBindings', 'createdAt', 'updatedAt', 'finishedAt', 'sessionId', 'attempt']);
+  fields(task, ['id', 'kind', 'goal', 'mode', 'execution', 'skillId','skillVersion','parameterValues', 'status', 'steps', 'message', 'error', 'awaitingSiteId', 'trace', 'siteBindings', 'createdAt', 'updatedAt', 'finishedAt', 'sessionId', 'attempt']);
   identifier(task.id);
   assert(task.kind === 'browser' && STATUSES.has(task.status) && MODES.has(task.mode)
     && Number.isSafeInteger(task.attempt) && task.attempt >= 1, 'AGENT_STORE_INVALID', '浏览器任务类型或状态无效。');
   text(task.goal, 2000);
+  if(task.execution!==undefined)assert(task.execution==='demonstration'&&task.skillId===undefined,'AGENT_STORE_INVALID','示范任务执行类型无效。');
   const siteBindings = bindings(task.siteBindings, task.mode);
   steps(task.steps);
   trace(task.trace, siteBindings);
@@ -272,9 +273,10 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
       }
       let interrupted = false;
       for (const task of state.tasks) {
-        if (task.status === 'running' && task.sessionId !== root.sessionId) {
-          Object.assign(task, { status: 'interrupted', message: '上次浏览器任务被中断，请由用户选择继续。', updatedAt: now() });
+        if ((task.status === 'running'||task.execution==='demonstration'&&task.status==='awaiting_user') && task.sessionId !== root.sessionId) {
+          Object.assign(task, { status: 'interrupted', message: task.execution==='demonstration'?'上次示范已中断，请重新开始示范。':'上次浏览器任务被中断，请由用户选择继续。', updatedAt: now() });
           task.finishedAt = task.updatedAt;
+          delete task.awaitingSiteId;
           interrupted = true;
         }
       }
@@ -301,8 +303,9 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
     listSkills() { return operation((state) => clone(state.skills).sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt))); },
     createTask(input) {
       return operation(async (state, save) => {
-        fields(input, ['goal', 'siteBindings', 'mode', 'skillId','skillVersion','values']);
+        fields(input, ['goal', 'siteBindings', 'mode', 'execution', 'skillId','skillVersion','values']);
         assert(MODES.has(input.mode), 'AGENT_INPUT_INVALID', '浏览器任务运行模式无效。');
+        if(input.execution!==undefined)assert(input.execution==='demonstration'&&input.skillId===undefined,'AGENT_INPUT_INVALID','示范任务不能携带工作流引用。');
         const goal = text(input.goal, 2000).trim();
         assert(goal, 'AGENT_INPUT_INVALID', '请说明浏览器任务目标。');
         const siteBindings = bindings(input.siteBindings, input.mode);
@@ -316,6 +319,7 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
         const timestamp = now();
         const task = { id: randomUUID(), kind: 'browser', goal, mode: input.mode, siteBindings,
           status: 'running', steps: [], trace: [], attempt: 1, createdAt: timestamp, updatedAt: timestamp, sessionId: root.sessionId };
+        if(input.execution!==undefined)task.execution=input.execution;
         if (input.skillId !== undefined){const skill=skillById(state,input.skillId);task.skillId=input.skillId;task.skillVersion=skill.version;task.parameterValues=resolveSkillParameters(skill,input.values);}
         state.tasks.push(task);
         await save();
@@ -354,9 +358,26 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
         return taskView(task);
       });
     },
-    resumeTask(id) {
+    // Trusted negative transition: a demonstrated completion is not accepted until
+    // its final authorization check succeeds. Never exposed as a renderer action.
+    invalidateDemonstration(id,patch){
+      return operation(async(state,save)=>{
+        fields(patch,['status','expectedAttempt','error']);
+        const task=taskById(state,id);
+        assert(task.execution==='demonstration'&&task.attempt===patch.expectedAttempt,'AGENT_TASK_STALE','示范结果来自旧一轮任务。');
+        assert(['cancelled','failed','interrupted'].includes(patch.status),'AGENT_INPUT_INVALID','示范只可作负向终态转换。');
+        if(['cancelled','failed','interrupted'].includes(task.status))return taskView(task);
+        assert(!state.skills.some(skill=>skill.source.taskId===id),'AGENT_TASK_TERMINAL','已保存为工作流的完成记录不能撤回。');
+        const next={...clone(task),status:patch.status,updatedAt:now(),finishedAt:now()};delete next.awaitingSiteId;
+        if(patch.error!==undefined){fields(patch.error,['code','message']);next.error={code:identifier(patch.error.code),message:text(patch.error.message,1000)};}
+        validateTask(next);state.tasks[state.tasks.indexOf(task)]=next;await save();return taskView(next);
+      });
+    },
+    resumeTask(id,options={}) {
       return operation(async (state, save) => {
         const task = taskById(state, id);
+        fields(options,['execution']);
+        if(task.execution==='demonstration')assert(options.execution==='demonstration'&&task.sessionId===root.sessionId,'DEMONSTRATION_RESUME_REQUIRED','中断示范必须重新开始，不能交给模型继续。');
         assert(['awaiting_user', 'interrupted', 'failed'].includes(task.status), 'AGENT_TASK_NOT_RESUMABLE', '此任务不能继续。');
         if(task.skillId){const skill=skillById(state,task.skillId);assert((task.skillVersion??1)===skill.version,'AGENT_SKILL_VERSION_CHANGED','工作流已修订，旧运行不能使用新模板继续。');resolveSkillParameters(skill,task.parameterValues);}
         assert(!state.tasks.some((entry) => entry.id !== id && ['running', 'awaiting_user'].includes(entry.status)), 'AGENT_TASK_ACTIVE', '请先结束当前浏览器任务。');

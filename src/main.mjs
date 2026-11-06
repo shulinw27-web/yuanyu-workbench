@@ -33,6 +33,8 @@ app.whenReady().then(async()=>{
     await runInteractiveSmoke({BrowserWindow});
     const {runAgentSmoke}=await import('../scripts/agent-smoke.mjs');
     await runAgentSmoke({BrowserWindow,cryptoAdapter,systems:mocks.systems,dataDir});
+    const {runDemonstrationSmoke}=await import('../scripts/demonstration-smoke.mjs');
+    await runDemonstrationSmoke({BrowserWindow,cryptoAdapter,systems:mocks.systems,dataDir});
     const {runProductUISmoke}=await import('../scripts/product-ui-smoke.mjs');
     await runProductUISmoke({BrowserWindow});
     const {runProductIntegrationSmoke}=await import('../scripts/product-integration-smoke.mjs');

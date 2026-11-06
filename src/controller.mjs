@@ -6,6 +6,7 @@ import {modelStatus,ensureModelConfig,proposeModelPlan} from './model/gateway.mj
 import {createSiteRegistry} from './sites/registry.mjs';
 import {createAgentStore} from './agent/store.mjs';
 import {createAgentRuntime} from './agent/runtime.mjs';
+import {createDemonstration} from './agent/demonstration.mjs';
 import {createBrowserModelRequester,probeModelProfile} from './model/gateway.mjs';
 import {createModelProfiles,PROVIDERS} from './model/profiles.mjs';
 import {accountIdentity} from './product/client.mjs';
@@ -21,6 +22,7 @@ const identities = {
   outsider:{companyId:'mock-other',userId:'outsider',displayName:'其他公司 · 测试成员',provider:'mock'}
 };
 const messages = {
+  DEMONSTRATION_INPUT_INVALID:'示范参数无效，请填写目标并选择一至三个授权站点。',DEMONSTRATION_ACTIVE:'请先完成或取消当前示范。',DEMONSTRATION_NOT_ACTIVE:'这次示范已结束或中断，请从新任务重新开始。',DEMONSTRATION_RESUME_REQUIRED:'请通过示范面板继续；重启后请直接重新示范，原记录保留。',DEMONSTRATION_NOT_PAUSED:'示范当前不在登录接管状态，请重新观察页面。',DEMONSTRATION_CONFIRMATION_REQUIRED:'请先核对当前页面结果，再明确确认完成示范。',DEMONSTRATION_RESULT_UNVERIFIED:'请至少执行一次可记录操作并读取当前结果后，再确认完成。',DEMONSTRATION_RESULT_CHANGED:'当前页面结果已变化，请查看新页面内容并重新核对后完成。',DEMONSTRATION_PAGE_INVALID:'当前页面结构无法安全记录，请重新观察或取消示范。',DEMONSTRATION_TIMEOUT:'示范操作超时，已停止当前记录；请检查站点后重新开始。',STALE_REFERENCE:'页面或控件已变化，请重新观察后再操作。',
   WRITE_INPUT_INVALID:'请选择合成月份并填写不含凭据的核对备注（最多300字）。',WRITE_CONFIRMATION_INVALID:'预览已过期或确认内容不匹配，请重新预览。',WRITE_CONTEXT_CHANGED:'身份或来源已变化，写入已停止。',WRITE_RECEIPT_RECONCILE_REQUIRED:'上次回执尚未确认，请先核对回执，不要重复提交。',CONTACT_UNAVAILABLE:'开发者联系方式尚未配置。',CLIPBOARD_UNAVAILABLE:'无法自动复制，请选中微信号手动复制。',
   AUTH_FAILED:'邮箱或密码不正确。',ACCOUNT_UNAVAILABLE:'此邮箱暂不能注册，请登录或联系开发者。',VERIFICATION_REQUIRED:'请先完成账号验证，真实服务可联系开发者核实开通。',VERIFICATION_INVALID:'验证码无效或已过期。',RATE_LIMITED:'请求过于频繁，请稍后再试。',MONTHLY_QUOTA_EXCEEDED:'本月免费Token额度不足，可等待下月或选择自己的API。',DAILY_REQUEST_LIMIT:'今日模型请求次数已用完，请明天再试或使用自己的API。',PROMOTION_NOT_AVAILABLE:'推广额度尚未开放，请联系开发者或选择自己的API。',PROMOTION_BUDGET_EXCEEDED:'开发者本月推广总额度已用完，请选择自己的API或联系开发者。',REQUEST_CONTEXT_EXPIRED:'原模型请求上下文已过期，未自动重新调用；请核对已用额度后再决定是否发起新任务。',PROVIDER_UNAVAILABLE:'推广模型未返回可核对结果，预留额度保留，请联系开发者。',PROVIDER_TIMEOUT:'推广模型超时，用量待核实，预留额度保留。',
   AUTH_REQUIRED:'请先注册或登录个人账号。',ACCOUNT_NOT_VERIFIED:'请先完成账号验证，再使用推广额度。',ENTERPRISE_REQUIRED:'公司工作流在个人版中仅供查看；使用请联系开发者开通企业版。',MOCK_IDENTITY_DISABLED:'注册账号模式不允许切换演示身份。',SERVICE_UNAVAILABLE:'账号与额度服务暂不可用，请检查服务配置。',SERVICE_TIMEOUT:'账号服务请求超时，请稍后手动重试。',SERVICE_CONFIG_INVALID:'账号服务配置无效，请检查仓库外的 product.local.json。',QUOTA_EXCEEDED:'免费额度已用完，可等待额度更新或选择自己的模型。',PROMOTION_DISABLED:'推广额度尚未开放，请联系开发者或选择自己的模型。',EMAIL_NOT_VERIFIED:'请先完成账号验证。',AUTH_INVALID:'邮箱或密码不正确。',MODEL_NOT_AVAILABLE:'所选推广模型当前不可用，请重新选择。',
@@ -45,7 +47,7 @@ export function safeError(error) {
 
 export async function createController({dataDir,cryptoAdapter,systems,BrowserWindow,builtinSites=[],onUpdate=()=>{},browserShow=true,openPath=async()=>{},planningGateway=proposeModelPlan,agentRequesterFactory,interactiveFactory,productClient,modelProbe=probeModelProfile,copyText=async()=>{throw new Error('CLIPBOARD_UNAVAILABLE');}}) {
   let identity=identities.alice, workspace, active=null, starting=false, startPending=null, switching=false, pending=null,planning=null;
-  let siteRegistry,customSites=[],currentSystems=systems,interactive=null,agentStore,agentRuntime,configurationPending=null,profiles,demoWrite,modelPreference={source:productClient?'sponsored':'byok',modelId:null};
+  let siteRegistry,customSites=[],currentSystems=systems,interactive=null,agentStore,agentRuntime,demonstration,configurationPending=null,profiles,demoWrite,modelPreference={source:productClient?'sponsored':'byok',modelId:null};
   const trustedSites=builtinSites.map(site=>({...site,builtin:true,revision:1}));
   const agentSites=async()=>[...trustedSites,...await siteRegistry.list()];
   const modelFile=()=>join(dataDir,'models',identity.companyId,identity.userId,'model.local.json');
@@ -73,11 +75,12 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
   function initializeAgent(){
     const owner=identity;agentStore=createAgentStore({dataDir,identity});
     agentRuntime=createAgentRuntime({store:agentStore,getSites:agentSites,getBrowser:()=>getBrowser(owner),isCurrent:()=>identity===owner&&!switching,authorize:()=>authorized(owner),onUpdate:notify,modelFile:modelFile(),safeError,requesterFactory:browserRequester});
+    demonstration=createDemonstration({store:agentStore,getSites:agentSites,getBrowser:()=>getBrowser(owner),isCurrent:()=>identity===owner&&!switching,authorize:()=>authorized(owner),onUpdate:notify,safeError});
   }
   if(productClient){const initial=await productClient.status();if(initial.authenticated)identity=accountIdentity(initial.account);}
   await initialize();
   async function snapshot(){
-    const owner=identity,target=workspace,registry=siteRegistry,store=agentStore,runtime=agentRuntime,sites=customSites,visibleSystems=Object.values(currentSystems),file=modelFile(),profileStore=profiles,writeSource=demoWrite;
+    const owner=identity,target=workspace,registry=siteRegistry,store=agentStore,runtime=agentRuntime,demo=demonstration,sites=customSites,visibleSystems=Object.values(currentSystems),file=modelFile(),profileStore=profiles,writeSource=demoWrite;
     const [core,registered,tasks,skills,legacyModel,profileList,profileStatus,product]=await Promise.all([target.snapshot(),registry.list(),store.listTasks(),store.listSkills(),modelStatus(file),profileStore.list(),profileStore.status(),productClient?.status()]);
     if(owner!==identity||target!==workspace||store!==agentStore||runtime!==agentRuntime)return snapshot();
     let model=profileList.activeId||profileList.revision>1?profileStatus:legacyModel;
@@ -87,13 +90,17 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     if(productView){base.shared=[{id:'sample-purchase-monthly',name:'采购与入库月报资料',version:1,description:'企业流程公开示例：跨采购、仓储核对并交付资料。个人版仅查看。',publisher:{displayName:'企业版公开示例'},publicSample:true}];if(!productView.authenticated){base.identity=null;base.systems=Object.values(systems);base.model={status:'not_configured'};for(const key of ['credentials','workflows','runs','agentTasks','agentSkills','sites','agentSites'])base[key]=[];base.modelProfiles={providers:base.modelProfiles.providers,profiles:[],activeId:null};}}
     if(!productView||productView.authenticated){try{base.writeDemo=await writeSource.snapshot();}catch{base.writeDemo={records:[],approvals:[],unavailable:true};}}
     if(owner!==identity||writeSource!==demoWrite)return snapshot();
+    base.demonstration=!productView||productView.authenticated?demo.snapshot():null;
+    base.busy=base.busy||demo.active||demo.busy;
+    if(demo!==demonstration)return snapshot();
     if(productView?.authenticated&&!await authorized(owner).catch(()=>false))return snapshot();
     return base;
   }
   async function notify(){ onUpdate(await snapshot()); }
-  const requireIdle=()=>{if(active || starting || switching || planning || agentRuntime.busy || configurationPending)throw new Error('BUSY');};
+  const requireIdle=()=>{if(active || starting || switching || planning || agentRuntime.busy || demonstration.active || demonstration.busy || configurationPending)throw new Error('BUSY');};
   const closeBrowser=async()=>{const old=interactive;interactive=null;await old?.close();};
   async function getBrowser(owner){
+    if(owner!==identity||switching)throw new Error('CANCELLED');
     const sites=[...trustedSites,...customSites.map(site=>({...site,manual:true,manualPostPaths:site.paths}))];
     if(!interactive){const {createInteractiveBrowser}=await import('./browser/interactive.mjs');if(owner!==identity||switching)throw new Error('CANCELLED');interactive=(interactiveFactory||createInteractiveBrowser)({BrowserWindow,show:browserShow,sites,onEvent:()=>{notify().catch(()=>{});}});}
     return interactive;
@@ -107,10 +114,10 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     else throw new Error('ACTION_INVALID');
     if(owner!==identity || session!==interactive)throw new Error('CANCELLED');if(!await authorized(owner))throw new Error('AUTH_REQUIRED');return result;
   }
-  async function launchAgent(operation){
+  async function launchAgent(operation,cancelStarted=id=>agentRuntime.cancel(id)){
     requireIdle();starting=true;let settled;
     const startup={cancelled:false,settled:new Promise(resolve=>{settled=resolve;})};startPending=startup;
-    try{const result=await operation();if(startup.cancelled)await agentRuntime.cancel(result.taskId);return result;}
+    try{const result=await operation();if(startup.cancelled)await cancelStarted(result.taskId);return result;}
     finally{starting=false;if(startPending===startup)startPending=null;settled();await notify();}
   }
   async function changeSites(operation){
@@ -126,7 +133,10 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
   async function accountAction(action,payload){
     if(!productClient)throw new Error('ACTION_INVALID');
     if(action==='auth.verify'){const result=await productClient.verify({code:payload.code});await notify();return result;}
-    if(action!=='auth.logout')requireIdle();else await configurationPending?.settled;
+    // Explicit authentication may end an old guided demonstration, including one whose account was revoked.
+    if(action!=='auth.logout'){
+      if(active||starting||switching||planning||agentRuntime.busy||configurationPending)throw new Error('BUSY');
+    }else await configurationPending?.settled;
     switching=true;
     try{
       await cancel();await closeBrowser();pending=null;
@@ -193,10 +203,11 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
   }
   async function cancel() {
     const cancelledPlanning=!!planning;planning?.abort();
+    const cancelledDemo=await demonstration.cancel({});
     const cancelledAgent=await agentRuntime.cancel();
     const startup=startPending;
     if(startup){startup.cancelled=true;await startup.settled;}
-    if(!active)return {cancelled:!!startup || cancelledPlanning || cancelledAgent.cancelled};
+    if(!active)return {cancelled:!!startup || cancelledPlanning || cancelledAgent.cancelled || cancelledDemo.cancelled};
     const token=active;token.cancelled=true;
     await token.target.updateRun(token.id,{status:'cancelled',error:{code:'CANCELLED',message:messages.CANCELLED}}).catch(()=>{});
     await token.driver.close();await token.promise;await notify();return {cancelled:true};
@@ -214,6 +225,12 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     let result;
     switch(action) {
       case 'snapshot':return snapshot();
+      case 'demo.start':return launchAgent(()=>demonstration.start({goal:payload.goal,siteIds:payload.siteIds,mode:payload.mode}),id=>demonstration.cancel({id}));
+      case 'demo.observe':case 'demo.act':case 'demo.handoff':case 'demo.resume':case 'demo.finish':{
+        if(active||starting||switching||planning||agentRuntime.busy||configurationPending)throw new Error('BUSY');
+        const method=action.slice(5);return demonstration[method](payload);
+      }
+      case 'demo.cancel':return demonstration.cancel({id:payload.id});
       case 'developer.contact.copy':{const info=await productClient?.status();const text=info?.developer?.contact;if(!text||typeof text!=='string'||text.length>320)throw new Error('CONTACT_UNAVAILABLE');await copyText(text);return {copied:true};}
       case 'write.demo.preview':return changeSites(()=>demoWrite.preview(payload));
       case 'write.demo.confirm':return changeSites(()=>demoWrite.confirm({id:payload.id,fingerprint:payload.fingerprint}));
@@ -237,8 +254,8 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
         }finally{if(planning===request)planning=null;await notify();}
       }
       case 'agent.start':return launchAgent(()=>agentRuntime.start({goal:payload.goal,siteIds:payload.siteIds,mode:payload.mode,consent:payload.consent}));
-      case 'agent.resume':return launchAgent(()=>agentRuntime.resume({id:payload.id,consent:payload.consent}));
-      case 'agent.cancel':return agentRuntime.cancel(payload.id);
+      case 'agent.resume':return launchAgent(async()=>{const task=(await agentStore.listTasks()).find(task=>task.id===payload.id);if(task?.execution==='demonstration')throw new Error('DEMONSTRATION_RESUME_REQUIRED');return agentRuntime.resume({id:payload.id,consent:payload.consent});});
+      case 'agent.cancel':{const task=(await agentStore.listTasks()).find(task=>task.id===payload.id);return task?.execution==='demonstration'?demonstration.cancel({id:payload.id}):agentRuntime.cancel(payload.id);}
       case 'agent.skill.save':requireIdle();result=await agentRuntime.saveSkill({taskId:payload.taskId,name:payload.name,pinned:payload.pinned});break;
       case 'agent.skill.run':return launchAgent(()=>agentRuntime.runSkill({id:payload.id,mode:payload.mode,consent:payload.consent,values:payload.values,expectedVersion:payload.expectedVersion}));
       case 'agent.skill.edit':requireIdle();result=await agentStore.editSkill(payload);break;
@@ -308,5 +325,5 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     }
     await notify();return result??{};
   }
-  return {invoke,snapshot,waitForIdle:async()=>{await configurationPending?.settled;await startPending?.settled;await active?.promise;await agentRuntime.waitForIdle();},close:async()=>{await configurationPending?.settled;await cancel();await closeBrowser();}};
+  return {invoke,snapshot,waitForIdle:async()=>{await configurationPending?.settled;await startPending?.settled;await active?.promise;await agentRuntime.waitForIdle();await demonstration.waitForIdle();},close:async()=>{await configurationPending?.settled;await cancel();await closeBrowser();}};
 }

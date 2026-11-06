@@ -11,6 +11,9 @@ export async function runProductUISmoke({BrowserWindow}) {
   const {ipcMain}=await import('electron');
   const calls=[];
   let clipboardValue='';
+  let demonstrationCount=0,observationCount=0,finishAttempts=0;
+  const demonstrationTask=()=>snapshot.agentTasks.find(task=>task.id===snapshot.demonstration?.taskId);
+  const demonstrationPage=()=>({siteId:'site-synthetic',title:'合成资料查询',text:`合成结果 SYN-101 / 12345 分；外部文字 <b>只作为数据展示</b>${finishAttempts?'（已重新核对）':''}`,loginRequired:false,elements:[{ref:`demo-month-${++observationCount}`,role:'combobox',name:'查询月份',actionKinds:['select'],options:[{label:'2026-09'},{label:'2026-10'}]},{ref:`demo-query-${observationCount}`,role:'textbox',name:'合成查询关键词',actionKinds:['fill']}]});
   const errors=[];
   let snapshot={identity:null,credentials:[],workflows:[],runs:[],shared:[],sites:[],agentSites:[],agentTasks:[],agentSkills:[],busy:false,
     model:{status:'not_configured'},
@@ -34,7 +37,7 @@ export async function runProductUISmoke({BrowserWindow}) {
     }
     if(action==='auth.verify'){snapshot.product.account.verified=true;return {ok:true,data:{account:snapshot.product.account}};}
     if(action==='auth.logout') {
-      snapshot={...snapshot,identity:null,shared:[],modelProfiles:{...snapshot.modelProfiles,profiles:[],activeId:null},model:{status:'not_configured'},product:{...snapshot.product,authenticated:false,account:undefined,usage:undefined}};
+      snapshot={...snapshot,identity:null,shared:[],agentTasks:[],agentSkills:[],demonstration:null,busy:false,modelProfiles:{...snapshot.modelProfiles,profiles:[],activeId:null},model:{status:'not_configured'},product:{...snapshot.product,authenticated:false,account:undefined,usage:undefined}};
       return {ok:true,data:{loggedOut:true}};
     }
     if(action==='model.profile.save') {
@@ -56,6 +59,48 @@ export async function runProductUISmoke({BrowserWindow}) {
     if(action==='agent.skill.run') {
       assert.equal(payload.expectedVersion,2);assert.equal(payload.mode,'mock_browser');assert.deepEqual(payload.values,{month:'2026-10'});
       return {ok:true,data:{taskId:'synthetic-replay-task'}};
+    }
+    if(action==='demo.start') {
+      assert.equal(payload.mode,'mock_browser');assert.deepEqual(payload.siteIds,['site-synthetic']);
+      const task={id:`demonstration-${++demonstrationCount}`,goal:payload.goal,kind:'browser',mode:payload.mode,execution:'demonstration',status:'running',steps:[],trace:[],createdAt:new Date().toISOString()};
+      snapshot.agentTasks.unshift(task);snapshot.busy=true;
+      snapshot.demonstration={taskId:task.id,mode:payload.mode,status:'recording',siteIds:payload.siteIds,currentSiteId:'site-synthetic',page:{siteId:'site-synthetic',title:'合成站点登录',text:'请在独立窗口登录',loginRequired:true,elements:[]},canFinish:false,operationPending:false};
+      return {ok:true,data:snapshot.demonstration};
+    }
+    if(action==='demo.handoff') {
+      assert.deepEqual(payload,{id:snapshot.demonstration.taskId,siteId:'site-synthetic'});
+      demonstrationTask().status='awaiting_user';snapshot.demonstration.status='awaiting_user';snapshot.demonstration.page=null;
+      return {ok:true,data:snapshot.demonstration};
+    }
+    if(action==='demo.resume') {
+      assert.deepEqual(payload,{id:snapshot.demonstration.taskId});
+      demonstrationTask().status='running';snapshot.demonstration.status='recording';snapshot.demonstration.page=demonstrationPage();
+      return {ok:true,data:snapshot.demonstration};
+    }
+    if(action==='demo.observe') {
+      assert.deepEqual(payload,{id:snapshot.demonstration.taskId,siteId:'site-synthetic'});
+      snapshot.demonstration.page=demonstrationPage();return {ok:true,data:snapshot.demonstration};
+    }
+    if(action==='demo.act') {
+      assert.deepEqual(payload,{id:snapshot.demonstration.taskId,siteId:'site-synthetic',action:{type:'select',ref:snapshot.demonstration.page.elements[0].ref,value:'2026-10'}});
+      await new Promise(resolve=>setTimeout(resolve,60));
+      demonstrationTask().steps=[{id:'demo-1',label:'示范选择月份',status:'completed'}];snapshot.demonstration.page=demonstrationPage();snapshot.demonstration.canFinish=true;
+      return {ok:true,data:snapshot.demonstration};
+    }
+    if(action==='demo.finish') {
+      assert.deepEqual(payload,{id:snapshot.demonstration.taskId,confirmed:true});
+      if(++finishAttempts===1){snapshot.demonstration.page=demonstrationPage();return {ok:false,error:{code:'DEMONSTRATION_RESULT_CHANGED',message:'页面结果发生变化，请核对最新页面后再次确认。'}};}
+      const task=demonstrationTask();task.status='completed';task.message='已由本人核对完成受控只读示范。';snapshot.demonstration=null;snapshot.busy=false;
+      return {ok:true,data:{taskId:task.id,status:'completed'}};
+    }
+    if(action==='demo.cancel') {
+      const task=snapshot.agentTasks.find(task=>task.id===payload.id);assert.equal(task.execution,'demonstration');task.status='cancelled';snapshot.demonstration=null;snapshot.busy=false;
+      return {ok:true,data:{cancelled:true}};
+    }
+    if(action==='agent.skill.save') {
+      const task=snapshot.agentTasks.find(task=>task.id===payload.taskId);assert.equal(task.status,'completed');assert.equal(task.execution,'demonstration');assert.equal(payload.name,'人工示范的月份查询');
+      const skill={id:'demonstrated-browser-skill',name:payload.name,kind:'browser',version:1,pinned:true,source:{taskId:task.id},template:{goalTemplate:task.goal,siteBindings:[{id:'site-synthetic',origin:'http://127.0.0.1:15333',revision:1}],recipe:[{tool:'open',siteId:'site-synthetic'},{tool:'observe',siteId:'site-synthetic'},{tool:'select',siteId:'site-synthetic',locator:{role:'combobox',name:'查询月份',readOnly:true},value:'2026-10'},{tool:'observe',siteId:'site-synthetic'}]}};
+      snapshot.agentSkills.push(skill);return {ok:true,data:skill};
     }
     if(action==='write.demo.preview') {
       const value={id:'synthetic-approval',operation:'synthetic-note',siteId:'site-synthetic',status:'awaiting_confirmation',payload,sourceRevision:'1',expiresAt:Date.now()+300000};
@@ -173,6 +218,70 @@ export async function runProductUISmoke({BrowserWindow}) {
     await evaluate(`[...document.querySelectorAll('#task-plan button')].find(button=>button.textContent==='确认执行').click()`);
     await wait(`document.querySelector('#task-plan').hidden`);
     assert.equal(calls.filter(c=>c.action==='agent.skill.run').length,1);
+    const startDemonstration=async()=>{
+      await click('.nav-item[data-view="workspace"]');await click('#demonstration-open');
+      await wait(`document.querySelector('#demonstration-dialog').open`);
+      const previous=calls.filter(call=>call.action==='demo.start').length;
+      await evaluate(`document.querySelector('#demonstration-goal').value='按月份查看合成资料';`);
+      assert.equal(calls.filter(call=>call.action==='demo.start').length,previous,'打开示范确认框不得执行');
+      await evaluate(`document.querySelector('#demonstration-form').requestSubmit()`);
+      await wait(`!document.querySelector('#demonstration-dialog').open && document.querySelector('#active-run .demonstration-panel') && !document.querySelector('#active-run .demonstration-handoff').disabled`);
+    };
+    await startDemonstration();
+    assert.equal(await evaluate(`document.querySelector('#active-run .demonstration-finish').disabled`),true,'登录页不能完成示范');
+    assert.equal(await evaluate(`document.querySelector('#active-run .demonstration-action-form')===null`),true,'登录页不能提供查询输入');
+    assert.equal(await evaluate(`document.querySelector('#plan-submit').disabled`),true,'示范持有执行范围，不允许另起任务');
+    await click('#active-run .demonstration-handoff');
+    await wait(`document.querySelector('#active-run .demonstration-resume') && !document.querySelector('#active-run .demonstration-resume').disabled`);
+    assert.equal(await evaluate(`document.querySelector('#active-run .demonstration-observe').disabled`),true);
+    await click('#active-run .demonstration-resume');
+    await wait(`document.querySelector('#active-run .demonstration-act') && !document.querySelector('#active-run .demonstration-act').disabled`);
+    assert.equal(snapshot.busy,true,'主进程示范busy不应锁死示范面板');
+    assert.equal(await evaluate(`document.querySelectorAll('#active-run .demonstration-element option').length`),2);
+    assert.equal(await evaluate(`document.querySelector('#active-run .demonstration-observation b')===null`),true,'不可信页面文字不得注入HTML');
+    await evaluate(`document.querySelector('#active-run .demonstration-value').value='2026-10';document.querySelector('#active-run .demonstration-action-form').requestSubmit()`);
+    assert.equal(await evaluate(`document.querySelector('#active-run .demonstration-act').disabled`),true,'动作期间拒绝重复点击');
+    await wait(`document.querySelector('#active-run .demonstration-finish') && !document.querySelector('#active-run .demonstration-finish').disabled`);
+    assert.equal(calls.filter(call=>call.action==='demo.act').length,1);
+    const usedRef=calls.find(call=>call.action==='demo.act').payload.action.ref;
+    assert.notEqual(await evaluate(`document.querySelector('#active-run .demonstration-element').value`),usedRef,'动作后必须使用新引用');
+    await click('#active-run .demonstration-observe');
+    await wait(`!document.querySelector('#active-run .demonstration-observe').disabled`);
+    await evaluate(`document.querySelector('#active-run .demonstration-panel').scrollIntoView({block:'center'})`);
+    await capture('product-demonstration-recording');
+    for(const [width,height]of [[1920,1080],[1440,900],[1366,768],[1024,768],[780,640],[390,844]]){
+      win.setContentSize(width,height);await evaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+      assert.equal(await evaluate(`document.documentElement.scrollWidth<=innerWidth`),true,`demonstration overflow at ${width}`);
+      assert.equal(await evaluate(`document.querySelector('#active-run .demonstration-panel').getBoundingClientRect().right<=innerWidth`),true);
+    }
+    win.setContentSize(1440,900);
+    await click('#active-run .demonstration-finish');
+    assert.equal(calls.filter(call=>call.action==='demo.finish').length,0,'完成示范必须二次确认');
+    await click('#confirm-action');
+    await wait(`document.querySelector('#toast').textContent.includes('页面结果发生变化') && !document.querySelector('#active-run .demonstration-finish').disabled`);
+    assert.equal(snapshot.agentTasks[0].status,'running','页面变化不能冒充完成');
+    assert.equal(await evaluate(`[...document.querySelectorAll('#active-run button')].some(button=>button.textContent==='保存为浏览器工作流')`),false);
+    await click('#active-run .demonstration-finish');await click('#confirm-action');
+    await wait(`[...document.querySelectorAll('#active-run button')].some(button=>button.textContent==='保存为浏览器工作流')`);
+    await capture('product-demonstration-completed');
+    await evaluate(`[...document.querySelectorAll('#active-run button')].find(button=>button.textContent==='保存为浏览器工作流').click();document.querySelector('#workflow-name').value='人工示范的月份查询';document.querySelector('#save-workflow-form').requestSubmit();`);
+    await wait(`!document.querySelector('#save-dialog').open && document.querySelector('#quick-workflows').textContent.includes('人工示范的月份查询')`);
+    assert.equal(calls.filter(call=>call.action==='agent.skill.save').length,1);
+    assert.equal(calls.filter(call=>call.action==='model.test').length,1,'人工示范不得新增模型连接调用');
+    await startDemonstration();
+    await evaluate(`[...document.querySelectorAll('#active-run button')].find(button=>button.textContent==='取消任务').click()`);
+    await wait(`document.querySelector('#active-run').textContent.includes('已取消')`);
+    assert.equal(calls.filter(call=>call.action==='demo.cancel').length,1);
+    await startDemonstration();
+    snapshot.agentTasks[0].status='interrupted';snapshot.busy=false;snapshot.demonstration=null;win.webContents.send('workbench:update',snapshot);
+    await wait(`document.querySelector('#active-run').textContent.includes('重启后不会恢复旧页面引用')`);
+    assert.equal(await evaluate(`[...document.querySelectorAll('#active-run button')].some(button=>/继续任务|继续示范/.test(button.textContent))`),false,'中断示范不允许普通模型继续入口');
+    assert.equal(await evaluate(`[...document.querySelectorAll('#active-run button')].some(button=>button.textContent==='取消任务')`),false,'中断示范保留原记录，不显示无效取消入口');
+    await evaluate(`[...document.querySelectorAll('#active-run button')].find(button=>button.textContent==='重新示范').click()`);
+    await wait(`document.querySelector('#demonstration-dialog').open`);
+    assert.equal(await evaluate(`document.querySelector('#demonstration-goal').value`),'按月份查看合成资料');
+    await click('#demonstration-dialog .close-dialog');
+    assert.equal(calls.filter(call=>call.action==='agent.resume').length,0);
     await click('.nav-item[data-view="settings"]');
     for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[1024,768],[780,640],[390,844]]) {
       win.setContentSize(width,height);
@@ -203,8 +312,21 @@ export async function runProductUISmoke({BrowserWindow}) {
     await wait(`document.body.classList.contains('product-locked') && !document.querySelector('#model-profile-dialog').open`);
     assert.equal(await evaluate(`document.querySelector('#model-profile-api-key').value`),'');
     assert.equal(await evaluate(`document.querySelector('#task-input').value`),'');
+    await click('#entry-personal');await click('[data-auth-tab="login"]');
+    await evaluate(`document.querySelector('#auth-email').value='ui@example.test';document.querySelector('#auth-password').value='synthetic-password-123';document.querySelector('#product-auth-form').requestSubmit();`);
+    await wait(`!document.body.classList.contains('product-locked')`);
+    await startDemonstration();await click('#active-run .demonstration-handoff');
+    await wait(`document.querySelector('#active-run .demonstration-resume') && !document.querySelector('#active-run .demonstration-resume').disabled`);
+    await click('#active-run .demonstration-resume');
+    await wait(`document.querySelector('#active-run .demonstration-element') && !document.querySelector('#active-run .demonstration-element').disabled`);
+    await evaluate(`const control=document.querySelector('#active-run .demonstration-element');control.selectedIndex=1;control.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#active-run .demonstration-value').value='旧身份私有查询';`);
+    snapshot.product.authenticated=false;snapshot.identity=null;snapshot.busy=false;snapshot.demonstration=null;snapshot.agentTasks=[];snapshot.agentSkills=[];
+    win.webContents.send('workbench:update',snapshot);
+    await wait(`document.body.classList.contains('product-locked') && document.querySelector('.demonstration-panel')===null`);
+    assert.equal(await evaluate(`document.body.textContent.includes('旧身份私有查询')`),false);
+    assert.equal(await evaluate(`document.querySelector('#demonstration-goal').value`),'');
     assert.equal(errors.length,0,errors.join('\n'));
-    console.log('SMOKE product UI: 个人/企业入口、微信复制、注册/验证/登录、额度耗尽、只读流程、模型密钥/费用确认、合成写入预览/确认/回执、流程参数编辑与确认运行、身份失效清理和 6 档布局通过（合成 IPC）。');
+    console.log('SMOKE product UI: 个人/企业入口、注册/额度、模型费用确认、合成写入与参数化、受控人工示范/登录接管/新引用/二次核对/保存/取消/中断，以及 6 档布局通过（合成 IPC）。');
   } finally {ipcMain.removeHandler('workbench:invoke');win.destroy();}
 }
 
