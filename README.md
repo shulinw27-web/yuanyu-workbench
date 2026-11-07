@@ -54,7 +54,7 @@
 
 ### 环境要求
 
-- **Node.js**：建议使用 Node.js 24；依赖安装要求至少 Node.js 22.12。
+- **Node.js**：Node.js 24 及以上；当前完整验证使用 v24.14.1。
 - **桌面环境**：当前完整回归在 Windows 上执行；macOS、Linux 尚未完成同等验证。
 - **Electron**：项目固定使用 `43.7.9`，随开发依赖安装。
 
@@ -153,10 +153,12 @@ flowchart LR
 | `npm run check` | 检查 JavaScript 语法与文档本地链接 |
 | `npm run test:desktop` | 运行 Electron、系统加密、实际网页与界面闭环回归 |
 | `npm run pack` | 构建未签名便携开发包，输出到 `output/portable` |
+| `npm run readiness -- --config <仓库外配置> --public-url <HTTPS入口>` | 只读部署预检，不联网或读取密钥内容 |
+| `npm run model:eval -- --offline` | 检查固定配方验收题库，不调用模型 |
 | `npm run service` | 独立启动账号与推广额度服务 |
 | `npm run service:admin -- list` | 查看本机运营服务的账号列表 |
 
-个人分支最近一次完整验证为 **184/184 项单测通过**，桌面闭环通过；具体环境、范围和限制见[测试报告](docs/TEST_REPORT.md)。这属于开发验证记录，生产环境仍需独立验收。
+个人分支最近一次完整验证为 **219/219 项单测通过**，桌面闭环通过；具体环境、范围和限制见[测试报告](docs/TEST_REPORT.md)。这属于开发验证记录，生产环境仍需独立验收。
 
 ```text
 src/
@@ -175,6 +177,7 @@ src/
 ## 文档与后续方向
 
 - [使用指南](docs/GUIDE.md)：演示操作、模型配置、推广服务部署与运营命令。
+- [运维指南](docs/OPERATIONS.md)：部署样例、预检、运营数据库备份/恢复及人工账号找回。
 - [开发计划](docs/PLAN.md)：唯一工作清单及尚未完成的能力。
 - [模块契约](docs/CONTRACTS.md)：接口、状态及信任边界。
 - [测试报告](docs/TEST_REPORT.md)：已执行验证与未验收项。

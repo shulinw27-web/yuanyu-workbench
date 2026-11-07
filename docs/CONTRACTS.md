@@ -109,3 +109,18 @@ UI负责界面文件 src/ui/*；不直接访问Node和文件系统。凭据表�
 - 登录页交给用户处理；显式继续仍按新观察安全重放，不宣称跨登录/进程保留精确业务状态。末尾有动作未读取的站点须重新观察；不能沿用旧页面宣布完成。
 - 任务可选replay元数据：stepIndex（0-based）、total（1—100）、tool、siteId、retries（0/1）、state（executing/recovering/completed/awaiting_user/failed）、可选reason（STALE_REFERENCE/PAGE_STRUCTURE_CHANGED/LOGIN_REQUIRED）。仅绑定Skill任务可写，站点必须属于任务，拒绝额外字段、页面、ref。
 - 每次成功和恢复尝试采用当前attempt写回；resume与重开遗留运行清除旧进度。恢复步骤单独记录在steps，UI区分执行步骤与重新观察尝试。
+
+## 推广服务运维与部署预检（2026-11-07）
+
+本机管理员CLI新增backup <新目录>、restore <备份目录> <新数据目录>、reset-password <邮箱>。与既有命令使用相同仓库外配置解析，restore直接使用显式参数。管理工具不监听HTTP，也不把管理动作开放到工作台IPC。
+
+- backupService({dataDir,backupDir})使用SQLite一致性快照，限定promotion.sqlite与service-backup.json，验证SHA256/integrity/schema，128MiB上限。外部密钥/配置不备份，数据库本身仍属敏感运营数据。
+- restoreService({backupDir,targetDir})只写新目录，不改原服务；撤销所有session、清verification、pending转uncertain并保留quota。正式切换时必须停止原服务，不能把两份额度库并行对外。
+- resetAccountPassword({dataDir,email,password})仅可信本机调用；scrypt参数与服务一致，新盐/CAS更新，撤旧session/挑战，不改变verified/enabled/用量。CLI密码仅stdin两次输入，交互不回显；操作者须事先人工核实身份。
+- inspectReadiness({configFile,publicUrl})只读配置与文件元数据；不读取密钥内容、不联网、不创建目录。ready/checks只证明配置和运行时条件，DNS/TLS/ACL/真实模型/恢复演练仍需人工验收。
+
+## 固定配方模型验收入口（2026-11-07）
+
+公共规划题库与纯评分模块只覆盖purchase_plan。runModelEvaluationCLI默认offline：不读取配置/密钥、不构造真实请求，报告not_run/scorePercent:null/networkRequests:0。live必须同时明确--live --allow-paid --config（仓库外模型配置）--max-requests，预算在读取配置前校验；每题仅一次，失败占尝试数，止损错误停止后续调用。
+
+输入仅task/month/signal，预期答案只在本地评分；报告区分requestsAttempted/networkRequests/覆盖率，不回传原始模型输出或秘密。CLI不执行浏览器工具；离线通过或固定规划得分不代表真实模型、页面理解或生产业务验收。

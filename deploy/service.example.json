@@ -1,0 +1,17 @@
+{
+  "dataDir": "/var/lib/yuanyu/promotion",
+  "host": "127.0.0.1",
+  "port": 15334,
+  "demo": false,
+  "monthlyTokens": 100000,
+  "dailyRequests": 20,
+  "globalMonthlyTokens": 0,
+  "developer": {"name": "开发者", "contactType": "wechat", "contact": "wsltest"},
+  "providers": [{
+    "id": "promotion-model",
+    "label": "推广模型",
+    "baseUrl": "https://YOUR-MODEL-PROVIDER.invalid/v1",
+    "model": "YOUR-MODEL-ID",
+    "apiKeyFile": "/etc/yuanyu/secrets/provider.key"
+  }]
+}

@@ -12,10 +12,12 @@
     "check": "node scripts/check.mjs",
     "pack": "node scripts/pack.mjs",
     "service": "node scripts/service.mjs",
-    "service:admin": "node scripts/service-admin.mjs"
+    "service:admin": "node scripts/service-admin.mjs",
+    "readiness": "node scripts/readiness.mjs",
+    "model:eval": "node scripts/model-eval.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "devDependencies": {
     "electron": "43.7.9"

@@ -1,22 +1,27 @@
 import {readFile,realpath,lstat} from 'node:fs/promises';
 import {DatabaseSync} from 'node:sqlite';
 import {homedir} from 'node:os';
-import {isAbsolute,join,relative,resolve,sep} from 'node:path';
+import {dirname,isAbsolute,join,relative,resolve,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {backupService,restoreService} from '../src/service/backup.mjs';
+import {resetAccountPassword,readAdminPassword} from '../src/service/account-admin.mjs';
 
 const ROOT=resolve(fileURLToPath(new URL('..',import.meta.url)));
 const fail=code=>Object.assign(new Error(code),{code});
 const outside=file=>{const offset=relative(ROOT,file);return !!offset&&(isAbsolute(offset)||offset==='..'||offset.startsWith('..'+sep));};
 const number=(value,max)=>{if(!/^(?:0|[1-9]\d*)$/.test(value??''))throw fail('ADMIN_ARGUMENT_INVALID');const parsed=Number(value);if(!Number.isSafeInteger(parsed)||parsed>max)throw fail('ADMIN_ARGUMENT_INVALID');return parsed;};
-const commands=new Set(['list','verify','disable','enable','revoke','quota','budget']);
+const commands=new Set(['list','verify','disable','enable','revoke','quota','budget','backup','restore','reset-password']);
+async function noLinks(path,code){for(let current=resolve(path);;current=dirname(current)){if((await lstat(current)).isSymbolicLink())throw fail(code);if(dirname(current)===current)break;}}
 
 /** Local machine operator only: no HTTP listener, provider construction or key access. */
-export async function runServiceAdmin(args,{env=process.env}={}){
+export async function runServiceAdmin(args,{env=process.env,passwordInput}={}){
   const [command,...values]=args;
-  if(!commands.has(command)||values.length!==({list:0,verify:1,disable:1,enable:1,revoke:1,quota:2,budget:1}[command]))throw fail('ADMIN_ARGUMENT_INVALID');
+  if(!commands.has(command)||values.length!==({list:0,verify:1,disable:1,enable:1,revoke:1,quota:2,budget:1,backup:1,restore:2,'reset-password':1}[command]))throw fail('ADMIN_ARGUMENT_INVALID');
+  if(command==='restore')return restoreService({backupDir:values[0],targetDir:values[1]});
   let config={};
   if(env.YUANYU_PROMOTION_CONFIG){
     if(!isAbsolute(env.YUANYU_PROMOTION_CONFIG))throw fail('ADMIN_CONFIG_INVALID');
+    await noLinks(env.YUANYU_PROMOTION_CONFIG,'ADMIN_CONFIG_INVALID');
     const target=await realpath(env.YUANYU_PROMOTION_CONFIG),info=await lstat(target);
     if(!outside(target)||!info.isFile()||info.size>16_384)throw fail('ADMIN_CONFIG_INVALID');
     config=JSON.parse(await readFile(target,'utf8'));
@@ -24,9 +29,12 @@ export async function runServiceAdmin(args,{env=process.env}={}){
   }
   const specified=config.dataDir||env.YUANYU_PROMOTION_DATA_DIR||join(env.LOCALAPPDATA||homedir(),'YuanyuWorkbench','promotion-service');
   if(typeof specified!=='string'||!isAbsolute(specified)||!outside(resolve(specified)))throw fail('ADMIN_PATH_INVALID');
+  await noLinks(specified,'ADMIN_PATH_INVALID');
   if((await lstat(specified)).isSymbolicLink())throw fail('ADMIN_PATH_INVALID');
   const root=await realpath(specified),file=join(root,'promotion.sqlite');
   if(!outside(root)||!(await lstat(root)).isDirectory()||(await lstat(file)).isSymbolicLink()||!(await lstat(file)).isFile())throw fail('ADMIN_PATH_INVALID');
+  if(command==='backup')return backupService({dataDir:specified,backupDir:values[0]});
+  if(command==='reset-password')return resetAccountPassword({dataDir:specified,email:values[0],password:passwordInput??await readAdminPassword()});
   const db=new DatabaseSync(file,{readOnly:command==='list',timeout:1000});
   const publicAccount=row=>({id:row.id,email:row.email,name:row.display_name,verified:row.verified===1,enabled:row.enabled===1});
   try{
@@ -58,5 +66,5 @@ export async function runServiceAdmin(args,{env=process.env}={}){
 
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   try{process.stdout.write(JSON.stringify(await runServiceAdmin(process.argv.slice(2)),null,2)+'\n');}
-  catch(cause){process.stderr.write((/^ADMIN_[A-Z_]+$/.test(cause.code??'')?cause.code:'ADMIN_OPERATION_FAILED')+'\n用法：node scripts/service-admin.mjs list | verify <邮箱> | disable <邮箱> | enable <邮箱> | revoke <邮箱> | quota <月token> <日次数> | budget <全局月token>\n');process.exitCode=1;}
+  catch(cause){process.stderr.write((/^(?:ADMIN_|SERVICE_BACKUP_)[A-Z_]+$/.test(cause.code??'')?cause.code:'ADMIN_OPERATION_FAILED')+'\n用法：node scripts/service-admin.mjs list | verify <邮箱> | disable <邮箱> | enable <邮箱> | revoke <邮箱> | quota <月token> <日次数> | budget <全局月token> | backup <新备份目录> | restore <备份目录> <新数据目录> | reset-password <邮箱>（密码由标准输入两次提供，不写在命令行）\n');process.exitCode=1;}
 }

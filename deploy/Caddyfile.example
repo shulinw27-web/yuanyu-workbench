@@ -1,0 +1,8 @@
+# Replace this reserved example hostname with your own DNS name before deployment.
+# DNS and firewall ports 80/443 must be configured by the operator.
+# This template has not been deployed or used to obtain a certificate.
+# References: https://caddyserver.com/docs/automatic-https
+#             https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
+accounts.example.invalid {
+    reverse_proxy 127.0.0.1:15334
+}

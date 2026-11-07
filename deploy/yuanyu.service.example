@@ -1,0 +1,27 @@
+# Linux systemd example. Create the yuanyu account and replace paths before use.
+# /usr/bin/node must be Node.js 24 or newer; run readiness with that same binary.
+# Keep the configuration and provider key outside the application checkout.
+# Reference: https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html
+[Unit]
+Description=Yuanyu account and promotion service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=yuanyu
+Group=yuanyu
+WorkingDirectory=/opt/yuanyu-workbench
+Environment=YUANYU_PROMOTION_CONFIG=/etc/yuanyu/service.json
+ExecStart=/usr/bin/node /opt/yuanyu-workbench/scripts/service.mjs
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/yuanyu
+
+[Install]
+WantedBy=multi-user.target
