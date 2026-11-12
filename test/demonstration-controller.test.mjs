@@ -66,5 +66,7 @@ test('本人HTTPS站点教出的Skill无需模型配置或页面外发同意即�
   const replay=await c.invoke('agent.skill.run',{id:skill.id,mode:'compatible_browser',expectedVersion:skill.version});
   await c.waitForIdle();
   const task=(await c.snapshot()).agentTasks.find(task=>task.id===replay.taskId);
-  assert.equal(task.status,'completed',JSON.stringify(task.error));assert.equal(f.counts().modelCalls,0);
+  assert.equal(task.status,'awaiting_review',JSON.stringify(task.error));assert.equal(task.verification.status,'needs_review');assert.equal(f.counts().modelCalls,0);
+  await c.invoke('agent.confirmResult',{id:replay.taskId,confirmed:true,expectedAttempt:task.attempt});
+  assert.equal((await c.snapshot()).agentTasks.find(task=>task.id===replay.taskId).status,'completed');assert.equal(f.counts().modelCalls,0);
 });

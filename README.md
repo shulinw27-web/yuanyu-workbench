@@ -142,7 +142,7 @@ flowchart LR
 
 企业接入、合作或部署咨询：**微信 `wsltest`**。
 
-个人开源版位于公共仓库的 `main` 与 `codex/personal`。版本范围及维护约定见[版本说明](docs/EDITIONS.md)。
+个人开源版位于公共仓库的 `main` 与 `personal`（原 `codex/personal`，2026-11-13 改名）。版本范围及维护约定见[版本说明](docs/EDITIONS.md)。
 
 ## 开发与验证
 
@@ -158,7 +158,7 @@ flowchart LR
 | `npm run service` | 独立启动账号与推广额度服务 |
 | `npm run service:admin -- list` | 查看本机运营服务的账号列表 |
 
-个人分支最近一次完整验证为 **219/219 项单测通过**，桌面闭环通过；具体环境、范围和限制见[测试报告](docs/TEST_REPORT.md)。这属于开发验证记录，生产环境仍需独立验收。
+个人分支最近一次完整验证为 **242/242 项单测通过**（Node.js v24.14.1 / Windows，含 M6 A 阶段记忆与统一工具、B 阶段有限反思与自我修正回归），桌面闭环通过；具体环境、范围和限制见[测试报告](docs/TEST_REPORT.md)。这属于开发验证记录，生产环境仍需独立验收。
 
 ```text
 src/

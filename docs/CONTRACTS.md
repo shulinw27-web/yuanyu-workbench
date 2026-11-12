@@ -85,7 +85,7 @@ UI负责界面文件 src/ui/*；不直接访问Node和文件系统。凭据表�
 
 ## 个人开源分发范围
 
-本分支不包含企业OIDC和HTTP共享适配器；本文相关契约保留为跨版本设计参考，实际代码在`codex/enterprise`。个人注册服务、模型配置与执行器保留，公司Mock仅作合成测试。详见[版本说明](EDITIONS.md)。
+本分支不包含企业OIDC和HTTP共享适配器；本文相关契约保留为跨版本设计参考，实际代码在`enterprise`（原 `codex/enterprise`）。个人注册服务、模型配置与执行器保留，公司Mock仅作合成测试。详见[版本说明](EDITIONS.md)。
 
 ## 工作台受控人工示范（2026-11-06）
 
@@ -124,3 +124,18 @@ UI负责界面文件 src/ui/*；不直接访问Node和文件系统。凭据表�
 公共规划题库与纯评分模块只覆盖purchase_plan。runModelEvaluationCLI默认offline：不读取配置/密钥、不构造真实请求，报告not_run/scorePercent:null/networkRequests:0。live必须同时明确--live --allow-paid --config（仓库外模型配置）--max-requests，预算在读取配置前校验；每题仅一次，失败占尝试数，止损错误停止后续调用。
 
 输入仅task/month/signal，预期答案只在本地评分；报告区分requestsAttempted/networkRequests/覆盖率，不回传原始模型输出或秘密。CLI不执行浏览器工具；离线通过或固定规划得分不代表真实模型、页面理解或生产业务验收。
+
+## M6 记忆、统一工具、结果验证与有限修正（2026-11-13，A/B 阶段）
+
+本节只描述本机合成验证过的接口，完成状态以[唯一工作清单](PLAN.md)和[测试报告](TEST_REPORT.md)为准，不代表真实模型或生产业务验收。
+
+- `snapshot.memory`返回`{revision,available,entries,settings}`；未登录、OS加密不可用或账号撤权时整体隐藏。载荷使用现有加密适配，存于仓库外`memory/<company>/<user>/state.json`，单写者原子替换与CAS revision；每条含kind、status、source、siteBindings、有效期及版本。`pauseRestoredMemory`只在恢复时把条目置为paused，不解密也不启用；`forget`级联清除所有历史版本、候选与派生载荷并保留最小删除标记；备份沿用精确白名单，不导出整个用户目录。
+- `memory.save{id?,kind,title,content,siteIds,expiresAt?,expectedRevision?}`、`memory.enabled`、`memory.confirm`、`memory.settings`、`memory.forget`、`memory.preview{query,siteIds,includeEpisodes?}`、`agent.history.clear{before,confirmed}`。候选默认proposed不生效；本机关键词检索先按可信身份、状态、有效期、站点及修订过滤，最多5条/约1500输入Token，不建立明文索引、不引入外部向量库。结构白名单与敏感内容检查拒绝凭据、URL内嵌账号、网页正文、提示注入及伪造字段；扫描只是辅助，不宣称能识别所有秘密。记忆只作为本次任务的不可信DATA，不授予站点、模型或企业权限。
+- `agent.start`新增`consent.memoryIds`（最多5条，须`consent.memory===true`）、`budgetOptions.maxModelRequests`（1—12）与`enableReflection`。`contextProvider`逐条取出本人已选记忆，请求前后复验身份、记忆revision及模型来源/配置revision；切换身份、模型或记忆修订即丢弃旧上下文，不把旧模型对话静默转发。已保存Skill重放不携带记忆、不构造模型requester、不要求页面外发同意。推广服务consent白名单同步接受`memory/memoryIds`，仅校验字段，不接收记忆正文。
+- 现有四工具由`createBrowserToolRegistry`/`createToolExecutor`统一注册执行：严格输入/输出schema、执行前后授权复验、串行调用、由可信执行器生成证据ID，结果状态为succeeded/failed/uncertain/awaiting_user/denied。界面、模型或网页不能注册工具实现；不新增任意Shell、HTTP或JS执行；登录、凭据与MFA仍由可信主进程和人工接管；普通工具继续拒绝业务写入。
+- `createTaskBudget`及store的`claimBudget/beginBudget/finishBudget`跨attempt累计模型请求、轮次、工具数、主动时间、修正与复核次数及输入Token估算；默认8次模型请求、12轮、45秒、1次修正、1次复核，Skill的modelRequests上限为0。继续或重启不刷新额度，旧任务缺budget以`AGENT_BUDGET_LEGACY`拒绝恢复。
+- `verifyTaskResult`独立于模型措辞检查必要站点覆盖、动作后重新读取与页面证据。内建合成站点按月份做确定性校验返回verified；其他开放式网页任务为needs_review，任务进入`awaiting_review`，须经`agent.confirmResult{id,confirmed:true,expectedAttempt}`明确核对后才转为completed；`store.saveSkill`拒绝未完成或未核对结果的任务。工具循环返回的是任务状态，写入步骤时必须映射为合法步骤状态，不能把任务级状态直接落盘。
+- B阶段错误分类：`classifyRecovery({code,effectState,correctionsUsed})`现由`runBrowserToolLoop`与`replayRecipe`共同调用，只返回`repair_once / handoff / stop`。仅`effectState==='not_started'`且`correctionsUsed===0`的`STALE_REFERENCE / INVALID_BROWSER_ACTION / AGENT_TOOL_INPUT_INVALID`允许一次修正；登录/MFA交人工接管；撤权、取消、越权/写入确认、来源或模型配置变化、提供方/额度/费用/限流/超时、未知回执、页面结构变化与预算耗尽一律停止。`onBudget`返回主进程累计预算，`used.corrections`为跨attempt唯一裁决依据，确定性引用恢复与可选模型复核不再各开一套计数；相同问题码或修正后重复同一调用立即以`AGENT_CORRECTION_NO_CHANGE`停止。
+- 可选模型复核：仅在`agent.start.enableReflection===true`时启用，每任务最多一次，先预留`correction`与`reflection`预算，再向当前请求追加结构化反馈消息；反馈只含安全错误码、站点ID和限定指令，不含页面正文或模型推理。修正后的每个动作仍经过原工具schema、执行前后授权复验与`Verifier`；完成状态仍由独立验证决定，模型复核不能单独升级为"已验证完成"。
+- 结构化修正记录：`task.reflections`最多5条，字段严格限制为`id / problemCode / evidenceIds / proposedCorrection / checkResult / nextAction`；`proposedCorrection`仅`REOBSERVE_CURRENT_SITE / CORRECT_TOOL_INPUT / NONE`，`checkResult`仅`pending / verified / needs_review / rejected`，`nextAction`仅`reobserve / deliver / await_user_review / stop`。证据ID来自可信执行器；记录不含网页正文、模型思维链或自由文本，`onReflection`在修正开始与复验结束时各写一次，任务卡展示问题、动作与复验结果。store按字段白名单校验，拒绝伪造字段、页面文本与超量；继续任务保留记录，迟到或取消后的结果不得落盘。
+- 脱敏经验候选：`snapshot.memory.settings`新增独立开关`rememberLessons`（默认关闭，与`rememberEpisodes`分别控制）。仅本人已完成、存在`verified / needs_review`复验记录、且开关打开时，控制器才用安全错误码与复验结论生成一条`kind:'lesson'`候选；`confirmed:false`即`proposed`，7天未确认清理，必须`memory.confirm`后才生效。同一运行ID不重复生成；候选不能自动修改永久Skill、白名单、预算或权限，也不能作为可信业务规则。候选是尽力而为，保存失败不影响任务完成。W27的摘要检索、失效冲突与Skill推荐、以及真实模型/业务效果对照仍按[清单](PLAN.md)保留。

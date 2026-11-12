@@ -1,11 +1,12 @@
+import {createMemoryUI} from './memory-ui.js';
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const SYSTEMS = [
   { id: 'procurement', label: 'Mock 采购订单', description: '采购订单 · 已审核记录', symbol: '▤' },
   { id: 'warehouse', label: 'Mock 仓储入库', description: '仓储入库 · 到货记录', symbol: '▥' },
 ];
-const VIEW_NAMES = { workspace: '新任务', history: '任务历史', workflows: '工作流', accounts: '系统与账号', company: '公司流程', settings: '设置' };
-const STATUS = { running: '执行中', awaiting_user: '等待你操作', interrupted: '已中断', completed: '已完成', failed: '未完成', cancelled: '已取消', pending: '等待执行', queued: '等待执行' };
+const VIEW_NAMES = { workspace: '新任务', history: '任务历史', workflows: '工作流', accounts: '系统与账号', company: '公司流程', settings: '设置', memory:'个人记忆' };
+const STATUS = { running: '执行中', awaiting_user: '等待你操作', awaiting_review:'待核对结果', interrupted: '已中断', completed: '已完成', failed: '未完成', cancelled: '已取消', pending: '等待执行', queued: '等待执行' };
 const state = {
   snapshot: { identity: null, credentials: [], workflows: [], runs: [], shared: [] },
   view: 'workspace', filter: 'all', plan: null, actionPending: false, planning: false,
@@ -16,6 +17,7 @@ const state = {
 let toastTimer;
 let confirmCallback;
 let unsubscribe;
+const memoryUI=createMemoryUI({state,element,append,button,invoke,mutation,refresh,render,confirmAction,isLocked,planSkill:planAgentSkill});
 
 function element(tag, className = '', text = '') {
   const node = document.createElement(tag);
@@ -131,6 +133,7 @@ function acceptSnapshot(snapshot) {
 }
 
 function clearAccountView() {
+  memoryUI.reset();
   state.entryPanel = 'choices'; state.demoVerificationCode = ''; state.modelTestResult = ''; state.writePreview = null; state.plan = null; state.activeRunId = null; state.request = ''; state.modelConsent = false; state.pageConsent = false; state.selectedSiteIds = []; state.agentSitesChosen = false; state.demonstrationSiteIds = []; state.expandedSteps.clear();
   for (const selector of ['#task-form', '#credential-form', '#model-profile-form', '#product-auth-form', '#entry-verify-form', '#settings-verify-form', '#save-workflow-form', '#edit-workflow-form', '#write-demo-form', '#agent-edit-form', '#agent-run-form', '#demonstration-form']) $(selector).reset();
   for (const dialog of $$('dialog')) if (dialog.open) dialog.close();
@@ -147,7 +150,7 @@ async function mutation(action, payload, successText) {
   render();
   try {
     await invoke(action, payload);
-    if (action.startsWith('model.')) { state.modelConsent = false; state.pageConsent = false; state.plan = null; state.modelTestResult = ''; }
+    if (action.startsWith('model.')) { memoryUI.reset();state.modelConsent = false; state.pageConsent = false; state.plan = null; state.modelTestResult = ''; }
     await refresh();
     if (successText) toast(successText);
     return true;
@@ -242,6 +245,7 @@ function renderPlan() {
     const steps = element('div', 'plan-steps');
     for (const [index, text] of [`访问已授权站点：${plan.siteIds.map((id) => agentSites().find((site) => site.id === id)?.label || id).join('、')}`, '在允许来源与路径内导航、观察并读取页面', '登录、验证码和多因素验证交给你操作', '仅整理可见资料，不提交业务变更'].entries()) steps.append(append(element('div', 'plan-step'), element('span', '', `0${index + 1}`), text));
     target.append(steps);
+    memoryUI.appendPlan(plan,target);
     const modeText = plan.skillId ? '仅在本机重放已保存步骤，不发送模型，不消耗推广额度' : plan.mode === 'mock_browser' ? '合成模型演示，不向外部发送页面' : '将本条任务文本和所选页面内容发送给已配置模型';
     target.append(append(element('div', 'plan-footer'), element('p', 'plan-meta', modeText), append(element('div'), button('暂不执行', 'button secondary small', () => { state.plan = null; render(); }), button('确认执行', 'button primary small', startRun, { disabled: isLocked() }))));
     return;
@@ -526,6 +530,20 @@ function renderAgentTask(task) {
   if (['running', 'awaiting_user', 'interrupted'].includes(task.status) && !(taught && task.status === 'interrupted')) heading.append(button('取消任务', 'button secondary small', () => mutation(taught ? 'demo.cancel' : 'agent.cancel', { id: task.id }, taught ? '已取消示范。' : '已取消浏览器任务。'), { disabled: state.actionPending }));
   append(panel, heading, element('p', 'run-caption', `${taught ? '人工示范 · 本机记录只读步骤' : task.skillId ? '个人工作流 · 本机只读重放' : task.mode === 'mock_browser' ? '合成模型 · 本机浏览器演示' : '模型浏览器任务'} · ${dateText(task.createdAt)}`));
   if (task.message) panel.append(element('p', 'agent-message', task.message));
+  if(task.budget){const b=task.budget;panel.append(element('p','form-note',`模型请求 ${b.used?.modelRequests||0}/${b.limits?.modelRequests||0} · 修正 ${b.used?.corrections||0}/${b.limits?.corrections||1} · 轮次 ${b.used?.rounds||0}/${b.limits?.rounds||12}；继续不刷新累计预算。`));}
+  if(task.verification)panel.append(element('p','form-note',`结果核对：${({verified:'确定性校验通过',user_confirmed:'由你核对确认',needs_review:'需要你核对'})[task.verification.status]||'待核对'}`));
+  const reflections = list(task.reflections);
+  if (reflections.length) {
+    const actions = { REOBSERVE_CURRENT_SITE: '重新观察当前站点', CORRECT_TOOL_INPUT: '纠正未执行的工具参数', NONE: '不自动修正' };
+    const results = { pending: '待复验', verified: '确定性校验通过', needs_review: '仍需你核对', rejected: '未完成复验' };
+    const next = { reobserve: '重新观察后复验', deliver: '交付结果', await_user_review: '等待你核对', stop: '停止' };
+    const box = element('div', 'reflection-card');
+    box.append(element('strong', '', '有限修正与复验记录'));
+    for (const record of reflections) box.append(element('p', 'form-note', `问题 ${record.problemCode} · 动作 ${actions[record.proposedCorrection] || record.proposedCorrection} · 复验 ${results[record.checkResult] || record.checkResult} · 下一步 ${next[record.nextAction] || record.nextAction}`));
+    box.append(element('p', 'form-note', '只记录安全错误码与复验结论；修正不会自动改写工作流、权限或记忆，经验候选需你明确核实。'));
+    panel.append(box);
+  }
+  if(task.status==='awaiting_review')panel.append(append(element('div','handoff-card'),element('strong','','请核对当前结果'),element('p','','工具步骤已结束；请在当前页面核对目标、参数和来源。确认后才能保存工作流。'),button('已核对，确认结果','button primary small',()=>confirmAction('确认任务结果','你已核对当前页面结果及本次目标？此确认不代表系统自动验证了全部业务事实。','确认结果',()=>mutation('agent.confirmResult',{id:task.id,confirmed:true,expectedAttempt:task.attempt},'结果已由你核对确认。'),false),{disabled:isLocked()})));
   if (task.error) panel.append(element('p', 'run-error', typeof task.error === 'string' ? task.error : task.error.message || '任务未完成。'));
   const replayProgress = renderReplayProgress(task); if (replayProgress) panel.append(replayProgress);
   const steps = list(task.steps);
@@ -890,7 +908,7 @@ function skillSiteIds(skill) {
 }
 
 function agentConsent(mode) {
-  return mode === 'mock_browser' ? { taskText: true, pageContent: true } : { taskText: state.modelConsent, pageContent: state.pageConsent };
+  return mode === 'mock_browser' ? { taskText: true, pageContent: true } : { taskText: state.modelConsent, pageContent: state.pageConsent,...memoryUI.consent() };
 }
 
 function selectDefaultAgentSites() {
@@ -1068,6 +1086,7 @@ function openSiteDialog(site) {
 }
 
 function newTask() {
+  memoryUI.reset();
   state.plan = null;
   state.activeRunId = null;
   state.request = '';
@@ -1093,6 +1112,7 @@ function render() {
   $('#try-example').disabled = isLocked();
   $('#demonstration-open').disabled = !state.connected || isLocked();
   $('#new-workflow').disabled = isLocked();
+  memoryUI.render();
   renderQuickWorkflows();
   renderPlan();
   renderRuns();
@@ -1149,14 +1169,14 @@ async function startRun() {
   render();
   try {
     let data;
-    if (plan.kind === 'browser') data = await invoke(plan.skillId ? 'agent.skill.run' : 'agent.start', plan.skillId ? { id: plan.skillId, mode: plan.mode, values: plan.values || {}, expectedVersion: plan.skillVersion } : { goal: plan.goal, siteIds: plan.siteIds, mode: plan.mode, consent: agentConsent(plan.mode) });
+    if (plan.kind === 'browser') data = await invoke(plan.skillId ? 'agent.skill.run' : 'agent.start', plan.skillId ? { id: plan.skillId, mode: plan.mode, values: plan.values || {}, expectedVersion: plan.skillVersion } : { goal: plan.goal, siteIds: plan.siteIds, mode: plan.mode, consent: agentConsent(plan.mode),...memoryUI.options() });
     else {
       const payload = { month: plan.month };
       if (plan.workflowId) payload.workflowId = plan.workflowId;
       data = await invoke(plan.workflowId ? 'workflow.run' : 'task.run', payload);
     }
     state.activeRunId = data?.taskId || data?.runId || data?.id || null;
-    if (plan.kind === 'browser') { state.modelConsent = false; state.pageConsent = false; }
+    if (plan.kind === 'browser') { memoryUI.reset();state.modelConsent = false; state.pageConsent = false; }
     state.plan = null;
     $('#task-input').value = '';
     await refresh();

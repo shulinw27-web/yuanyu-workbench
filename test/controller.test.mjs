@@ -78,7 +78,11 @@ test('通用浏览器通过控制器使用兼容网关，私有skill不能误存
   const file=join(dataDir,'models','mock-acme','alice','model.local.json'),apiKeyFile=join(dataDir,'synthetic.key');await mkdir(join(dataDir,'models','mock-acme','alice'),{recursive:true});await writeFile(apiKeyFile,'synthetic-controller-key');
   await writeFile(file,JSON.stringify({schemaVersion:1,enabled:true,baseUrl:'https://provider.example.invalid/v1',model:'synthetic-controller',apiKeyFile,dataScope:'selected_pages'}));
   const {taskId}=await controller.invoke('agent.start',{goal:'查看合成业务状态',siteIds:[site.id],mode:'compatible_browser',consent:{taskText:true,pageContent:true}});await controller.waitForIdle();
-  assert.equal((await controller.snapshot()).agentTasks[0].status,'completed');assert.equal(requests,3);assert.equal(open,true);
+  const review=(await controller.snapshot()).agentTasks[0];
+  assert.equal(review.status,'awaiting_review',JSON.stringify(review.error));assert.equal(review.verification.status,'needs_review');assert.equal(requests,3);assert.equal(open,true);
+  await assert.rejects(controller.invoke('agent.skill.save',{taskId,name:'未核对',pinned:true}),error=>error?.code==='AGENT_TASK_NOT_COMPLETED');
+  await controller.invoke('agent.confirmResult',{id:taskId,confirmed:true,expectedAttempt:review.attempt});
+  assert.equal((await controller.snapshot()).agentTasks[0].status,'completed');
   await assert.rejects(controller.invoke('workflow.save',{runId:taskId,name:'错误月报',pinned:true}));
   const skill=await controller.invoke('agent.skill.save',{taskId,name:'查看业务状态',pinned:true});assert.equal(skill.kind,'browser');assert.equal(skill.template.siteBindings[0].revision,1);
   await controller.invoke('site.update',{...site,revision:undefined,expectedRevision:1,label:'新来源配置'});

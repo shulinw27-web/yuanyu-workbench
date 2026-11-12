@@ -1,12 +1,13 @@
 import {mkdir,readdir,lstat,realpath,readFile,writeFile,rename} from 'node:fs/promises';
 import {createHash,randomUUID} from 'node:crypto';import {isAbsolute,relative,resolve,join,dirname,basename,sep} from 'node:path';import {fileURLToPath} from 'node:url';
 import {validateProfile} from '../model/gateway.mjs';
+import {pauseRestoredMemory} from '../memory/store.mjs';
 const repo=resolve(fileURLToPath(new URL('../..',import.meta.url)));
 const fail=code=>Object.assign(new Error(code),{code});const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const inside=(base,target)=>{const path=relative(base,target);return !path||path!=='..'&&!path.startsWith(`..${sep}`)&&!isAbsolute(path);};
-const permitted=path=>path==='.publication-key'||/^(companies|outputs|sites|write-approvals)\//.test(path)||/^models\/[^/]+\/[^/]+\/model\.local\.json$/.test(path)||/^demo-source\/[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}\/[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}\/state\.json$/.test(path)||/^agents\/[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}\/[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}\/state\.json$/.test(path);
+const permitted=path=>path==='.publication-key'||/^(companies|outputs|sites|write-approvals)\//.test(path)||/^models\/[^/]+\/[^/]+\/model\.local\.json$/.test(path)||/^(demo-source|agents|memory)\/[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}\/[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}\/state\.json$/.test(path);
 async function safeDirectory(path){if(typeof path!=='string'||!isAbsolute(path)||inside(repo,resolve(path)))throw fail('BACKUP_PATH_INVALID');for(let item=resolve(path);;item=dirname(item)){try{if((await lstat(item)).isSymbolicLink())throw fail('BACKUP_SYMLINK_DENIED');}catch(error){if(error.code!=='ENOENT')throw error;}if(dirname(item)===item)break;}const suffix=[];let ancestor=resolve(path);while(true){try{const canonical=join(await realpath(ancestor),...suffix);if(inside(repo,canonical))throw fail('BACKUP_PATH_INVALID');return canonical;}catch(error){if(error.code!=='ENOENT')throw error;suffix.unshift(basename(ancestor));ancestor=dirname(ancestor);}}}
-async function walk(root){const files=[];async function visit(dir){for(const entry of await readdir(dir,{withFileTypes:true})){const file=join(dir,entry.name),path=relative(root,file).replaceAll('\\','/');if(path.split('/').length===1&&!['companies','outputs','sites','models','write-approvals','agents','demo-source','.publication-key'].includes(path))continue;const stat=await lstat(file);if(stat.isSymbolicLink())throw fail('BACKUP_SYMLINK_DENIED');if(stat.isDirectory())await visit(file);else if(stat.isFile()&&permitted(path))files.push({path,file});if(files.length>1000)throw fail('BACKUP_TOO_LARGE');}}await visit(root);return files;}
+async function walk(root){const files=[];async function visit(dir){for(const entry of await readdir(dir,{withFileTypes:true})){const file=join(dir,entry.name),path=relative(root,file).replaceAll('\\','/');if(path.split('/').length===1&&!['companies','outputs','sites','models','write-approvals','agents','demo-source','memory','.publication-key'].includes(path))continue;const stat=await lstat(file);if(stat.isSymbolicLink())throw fail('BACKUP_SYMLINK_DENIED');if(stat.isDirectory())await visit(file);else if(stat.isFile()&&permitted(path))files.push({path,file});if(files.length>1000)throw fail('BACKUP_TOO_LARGE');}}await visit(root);return files;}
 /** Caller must quiesce the single-process workspace, including its agent runner. Agent state alone is included, never browser cookies, locks or external model key files. */
 export async function backupWorkspace({dataDir,backupDir}) {
   const source=await realpath(await safeDirectory(dataDir)),target=await safeDirectory(backupDir);if(inside(source,target)||inside(target,source))throw fail('BACKUP_PATH_INVALID');
@@ -28,6 +29,7 @@ export async function restoreWorkspace({backupDir,targetDir}) {
       const state=JSON.parse(bytes.toString('utf8'));for(const run of state.runs||[]){if(run.artifact)for(const key of ['path','sourcePath'])if(run.artifact[key]){const original=join(await safeDirectory(dirname(resolve(run.artifact[key]))),basename(run.artifact[key]));if(!inside(manifest.sourceRoot,original))throw fail('BACKUP_ARTIFACT_INVALID');run.artifact[key]=join(target,relative(manifest.sourceRoot,original));}}bytes=Buffer.from(JSON.stringify(state,null,2)+'\n');
     }
     const file=join(staging,entry.path);await mkdir(dirname(file),{recursive:true,mode:0o700});await writeFile(file,bytes,{flag:'wx',mode:0o600});
+    if(entry.path.startsWith('memory/'))await pauseRestoredMemory({file});
   }
   await rename(staging,target);return {directory:target,files:staged.length,credentialProtection:'os-user-bound',note:'凭据仍绑定原操作系统用户，跨机器或用户需重新录入。'};
 }

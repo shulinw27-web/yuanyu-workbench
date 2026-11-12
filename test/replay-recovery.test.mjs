@@ -95,8 +95,10 @@ test('保存的HTTPS Skill无需配置模型或模型发送同意，登录后继
   const started=await runtime.runSkill({id:skill.id,mode:'compatible_browser'});await runtime.waitForIdle();
   assert.equal((await store.listTasks()).find(task=>task.id===started.taskId).status,'awaiting_user');
   logged=true;await runtime.resume({id:started.taskId});await runtime.waitForIdle();
-  const completed=(await store.listTasks()).find(task=>task.id===started.taskId);
-  assert.equal(completed.status,'completed',JSON.stringify(completed.error));assert.equal(modelCalls,0);
+  let completed=(await store.listTasks()).find(task=>task.id===started.taskId);
+  assert.equal(completed.status,'awaiting_review',JSON.stringify(completed.error));assert.equal(modelCalls,0);
+  await runtime.confirmResult({id:completed.id,confirmed:true,expectedAttempt:completed.attempt});
+  completed=(await store.listTasks()).find(task=>task.id===started.taskId);assert.equal(completed.status,'completed');assert.equal(completed.verification.status,'user_confirmed');assert.equal(modelCalls,0);
   assert.equal(completed.replay.state,'completed');assert.ok(completed.steps.some(entry=>entry.id==='recovery-2-1'&&entry.status==='completed'));
   const disk=await readFile(join(dataDir,'agents','mock-acme','alice','state.json'),'utf8');assert.ok(!disk.includes('current-ref'));assert.ok(!disk.includes('合成资料结果'));assert.ok(!disk.includes('"ref"'));
 });

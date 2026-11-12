@@ -23,3 +23,6 @@ credentials*
 *.jks
 *.secret
 *.secrets
+
+# 本机工作记录与项目私有数据，不进入公开仓库
+.workbuddy/

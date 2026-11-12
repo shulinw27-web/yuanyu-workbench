@@ -73,8 +73,10 @@ function inferenceInput(input, models) {
   fields(input, ['modelId', 'messages', 'tools', 'consent', 'requestId']);
   assert(models.some((model) => model.id === input.modelId), 400, 'MODEL_NOT_ALLOWED');
   assert(typeof input.requestId === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{7,99}$/.test(input.requestId));
-  fields(input.consent, ['taskText', 'pageContent']);
+  fields(input.consent, ['taskText', 'pageContent', 'memory', 'memoryIds']);
   assert(input.consent.taskText === true && (input.consent.pageContent === undefined || typeof input.consent.pageContent === 'boolean'), 403, 'CONSENT_REQUIRED');
+  assert(input.consent.memory===undefined||typeof input.consent.memory==='boolean',403,'CONSENT_REQUIRED');
+  if(input.consent.memoryIds!==undefined)assert(Array.isArray(input.consent.memoryIds)&&input.consent.memoryIds.length<=5&&new Set(input.consent.memoryIds).size===input.consent.memoryIds.length&&input.consent.memoryIds.every(id=>text(id,1,100))&&(!input.consent.memoryIds.length||input.consent.memory===true),403,'CONSENT_REQUIRED');
   assert(Array.isArray(input.messages) && input.messages.length > 0 && input.messages.length <= 40);
   for (const message of input.messages) {
     fields(message, ['role', 'content', 'tool_calls', 'tool_call_id', 'reasoning_content']);

@@ -6,6 +6,7 @@ import {modelStatus,ensureModelConfig,proposeModelPlan} from './model/gateway.mj
 import {createSiteRegistry} from './sites/registry.mjs';
 import {createAgentStore} from './agent/store.mjs';
 import {createAgentRuntime} from './agent/runtime.mjs';
+import {createMemoryStore} from './memory/store.mjs';
 import {createDemonstration} from './agent/demonstration.mjs';
 import {createBrowserModelRequester,probeModelProfile} from './model/gateway.mjs';
 import {createModelProfiles,PROVIDERS} from './model/profiles.mjs';
@@ -22,6 +23,8 @@ const identities = {
   outsider:{companyId:'mock-other',userId:'outsider',displayName:'其他公司 · 测试成员',provider:'mock'}
 };
 const messages = {
+  MEMORY_INPUT_INVALID:'记忆格式或范围无效，请检查内容，不要填写凭据。',MEMORY_CONSENT_REQUIRED:'请逐条选择并确认本次发送给模型的记忆。',MEMORY_SELECTION_CHANGED:'所选记忆已变化、过期或不适用于当前站点，请重新选择。',MEMORY_CRYPTO_UNAVAILABLE:'系统加密不可用，记忆未保存。',MEMORY_VERSION_CONFLICT:'记忆已更新，请刷新后重新操作。',
+  AGENT_BUDGET_EXHAUSTED:'本任务预算已用完，请核对结果后创建新任务。',AGENT_BUDGET_LEGACY:'旧任务没有可核对的累计预算，请创建新任务。',AGENT_REVIEW_REQUIRED:'结果需要你核对后才能保存为工作流。',AGENT_CORRECTION_NO_CHANGE:'修正后没有产生可核对的变化，任务已停止；请检查当前页面。',
   DEMONSTRATION_INPUT_INVALID:'示范参数无效，请填写目标并选择一至三个授权站点。',DEMONSTRATION_ACTIVE:'请先完成或取消当前示范。',DEMONSTRATION_NOT_ACTIVE:'这次示范已结束或中断，请从新任务重新开始。',DEMONSTRATION_RESUME_REQUIRED:'请通过示范面板继续；重启后请直接重新示范，原记录保留。',DEMONSTRATION_NOT_PAUSED:'示范当前不在登录接管状态，请重新观察页面。',DEMONSTRATION_CONFIRMATION_REQUIRED:'请先核对当前页面结果，再明确确认完成示范。',DEMONSTRATION_RESULT_UNVERIFIED:'请至少执行一次可记录操作并读取当前结果后，再确认完成。',DEMONSTRATION_RESULT_CHANGED:'当前页面结果已变化，请查看新页面内容并重新核对后完成。',DEMONSTRATION_PAGE_INVALID:'当前页面结构无法安全记录，请重新观察或取消示范。',DEMONSTRATION_TIMEOUT:'示范操作超时，已停止当前记录；请检查站点后重新开始。',STALE_REFERENCE:'页面或控件已变化，请重新观察后再操作。',
   WRITE_INPUT_INVALID:'请选择合成月份并填写不含凭据的核对备注（最多300字）。',WRITE_CONFIRMATION_INVALID:'预览已过期或确认内容不匹配，请重新预览。',WRITE_CONTEXT_CHANGED:'身份或来源已变化，写入已停止。',WRITE_RECEIPT_RECONCILE_REQUIRED:'上次回执尚未确认，请先核对回执，不要重复提交。',CONTACT_UNAVAILABLE:'开发者联系方式尚未配置。',CLIPBOARD_UNAVAILABLE:'无法自动复制，请选中微信号手动复制。',
   AUTH_FAILED:'邮箱或密码不正确。',ACCOUNT_UNAVAILABLE:'此邮箱暂不能注册，请登录或联系开发者。',VERIFICATION_REQUIRED:'请先完成账号验证，真实服务可联系开发者核实开通。',VERIFICATION_INVALID:'验证码无效或已过期。',RATE_LIMITED:'请求过于频繁，请稍后再试。',MONTHLY_QUOTA_EXCEEDED:'本月免费Token额度不足，可等待下月或选择自己的API。',DAILY_REQUEST_LIMIT:'今日模型请求次数已用完，请明天再试或使用自己的API。',PROMOTION_NOT_AVAILABLE:'推广额度尚未开放，请联系开发者或选择自己的API。',PROMOTION_BUDGET_EXCEEDED:'开发者本月推广总额度已用完，请选择自己的API或联系开发者。',REQUEST_CONTEXT_EXPIRED:'原模型请求上下文已过期，未自动重新调用；请核对已用额度后再决定是否发起新任务。',PROVIDER_UNAVAILABLE:'推广模型未返回可核对结果，预留额度保留，请联系开发者。',PROVIDER_TIMEOUT:'推广模型超时，用量待核实，预留额度保留。',
@@ -47,7 +50,7 @@ export function safeError(error) {
 
 export async function createController({dataDir,cryptoAdapter,systems,BrowserWindow,builtinSites=[],onUpdate=()=>{},browserShow=true,openPath=async()=>{},planningGateway=proposeModelPlan,agentRequesterFactory,interactiveFactory,productClient,modelProbe=probeModelProfile,copyText=async()=>{throw new Error('CLIPBOARD_UNAVAILABLE');}}) {
   let identity=identities.alice, workspace, active=null, starting=false, startPending=null, switching=false, pending=null,planning=null;
-  let siteRegistry,customSites=[],currentSystems=systems,interactive=null,agentStore,agentRuntime,demonstration,configurationPending=null,profiles,demoWrite,modelPreference={source:productClient?'sponsored':'byok',modelId:null};
+  let siteRegistry,customSites=[],currentSystems=systems,interactive=null,agentStore,agentRuntime,demonstration,configurationPending=null,profiles,demoWrite,memoryStore,modelPreference={source:productClient?'sponsored':'byok',modelId:null};
   const trustedSites=builtinSites.map(site=>({...site,builtin:true,revision:1}));
   const agentSites=async()=>[...trustedSites,...await siteRegistry.list()];
   const modelFile=()=>join(dataDir,'models',identity.companyId,identity.userId,'model.local.json');
@@ -57,7 +60,7 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     siteRegistry=createSiteRegistry({dataDir,identity});customSites=await siteRegistry.list();currentSystems=systemDictionary(customSites);workspace = await createWorkspace({dataDir,cryptoAdapter,identity,systems:currentSystems});profiles=createModelProfiles({dataDir,identity,cryptoAdapter});
     modelPreference={source:productClient?'sponsored':'byok',modelId:null};
     try{const value=JSON.parse(await readFile(preferencesFile(),'utf8'));if(!['sponsored','byok'].includes(value.source)||value.modelId!==null&&typeof value.modelId!=='string')throw new Error('MODEL_CONFIG_INVALID');modelPreference=value;}catch(error){if(error.code!=='ENOENT')throw error;}
-    initializeAgent();
+    memoryStore=createMemoryStore({dataDir,identity,cryptoAdapter});initializeAgent();
     const owner=identity;demoWrite=createDemoWrite({dataDir,identity:owner,checkContext:async()=>identity===owner&&!switching&&await authorized(owner)});
   };
   async function authorized(owner=identity){
@@ -72,15 +75,46 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     const selection=await profileSelection(profiles);return createBrowserModelRequester({...input,...selection});
   }
   async function profileSelection(store){const list=await store.list();if(list.activeId)return {profiles:store};if(list.revision>1)throw new Error('MODEL_NOT_CONFIGURED');return {};}
+  let offerLesson=async()=>{};
   function initializeAgent(){
-    const owner=identity;agentStore=createAgentStore({dataDir,identity});
-    agentRuntime=createAgentRuntime({store:agentStore,getSites:agentSites,getBrowser:()=>getBrowser(owner),isCurrent:()=>identity===owner&&!switching,authorize:()=>authorized(owner),onUpdate:notify,modelFile:modelFile(),safeError,requesterFactory:browserRequester});
+    const owner=identity,memories=memoryStore;agentStore=createAgentStore({dataDir,identity});
+    // Best-effort lesson candidate: never blocks completion, never auto-enables or edits a Skill.
+    offerLesson=async task=>{
+      try{
+        if(identity!==owner||switching||memories!==memoryStore||!await authorized(owner))return;
+        if(!task||task.status!=='completed'||!Array.isArray(task.reflections)||!task.reflections.length)return;
+        const view=await memories.snapshot();if(!view.available||!view.settings?.rememberLessons)return;
+        const record=task.reflections.find(entry=>['verified','needs_review'].includes(entry.checkResult));if(!record)return;
+        if(view.entries.some(entry=>entry.kind==='lesson'&&entry.source?.id===task.id))return;
+        await memories.save({kind:'lesson',title:'一次修正经验（待确认）',content:`遇到 ${record.problemCode} 时按限定路径重新观察并复验；复验结果 ${record.checkResult}。这只是一次本机运行的候选，不是通用规则，需你核实后才会启用。`,siteBindings:task.siteBindings,source:{type:'verified_run',id:task.id},confirmed:false});
+        await notify();
+      }catch{return;}
+    };
+    agentRuntime=createAgentRuntime({store:agentStore,getSites:agentSites,getBrowser:()=>getBrowser(owner),isCurrent:()=>identity===owner&&!switching,authorize:()=>authorized(owner),onUpdate:notify,modelFile:modelFile(),safeError,requesterFactory:browserRequester,
+      contextProvider:async({goal,siteBindings,consent})=>{
+        const ids=consent?.memoryIds||[];
+        if(!Array.isArray(ids)||ids.length>5||new Set(ids).size!==ids.length||ids.some(id=>typeof id!=='string')||ids.length&&consent?.memory!==true)throw new Error('MEMORY_CONSENT_REQUIRED');
+        if(!ids.length)return {text:'',revision:0};
+        const selected=await memories.retrieve({query:goal,siteBindings,ids,includeEpisodes:true});
+        if(selected.entries.length!==ids.length)throw new Error('MEMORY_SELECTION_CHANGED');
+        const selection=JSON.stringify([modelPreference,(await profiles.list()).revision]);
+        return {text:JSON.stringify(selected.entries.map(({id,kind,title,content})=>({id,kind,title,content}))),revision:selected.revision,
+          check:async()=>identity===owner&&!switching&&memories===memoryStore&&await memories.getRevision()===selected.revision&&selection===JSON.stringify([modelPreference,(await profiles.list()).revision])};
+      },
+      onTaskMemory:async info=>{
+        if(identity!==owner||switching||memories!==memoryStore||!await authorized(owner))return;
+        const task=info.task;if(!task||task.status!=='completed')return;
+        const view=await memories.snapshot();
+        if(view.settings?.rememberEpisodes)await memories.save({kind:'episode',title:'已完成任务摘要',content:`任务已完成；执行模式：${task.mode}；步骤数：${task.steps?.length||0}。业务数据需重新查询。`,siteBindings:task.siteBindings,source:{type:'verified_run',id:task.id},confirmed:true});
+        await offerLesson(task);
+      }
+    });
     demonstration=createDemonstration({store:agentStore,getSites:agentSites,getBrowser:()=>getBrowser(owner),isCurrent:()=>identity===owner&&!switching,authorize:()=>authorized(owner),onUpdate:notify,safeError});
   }
   if(productClient){const initial=await productClient.status();if(initial.authenticated)identity=accountIdentity(initial.account);}
   await initialize();
   async function snapshot(){
-    const owner=identity,target=workspace,registry=siteRegistry,store=agentStore,runtime=agentRuntime,demo=demonstration,sites=customSites,visibleSystems=Object.values(currentSystems),file=modelFile(),profileStore=profiles,writeSource=demoWrite;
+    const owner=identity,target=workspace,registry=siteRegistry,store=agentStore,runtime=agentRuntime,demo=demonstration,sites=customSites,visibleSystems=Object.values(currentSystems),file=modelFile(),profileStore=profiles,writeSource=demoWrite,memories=memoryStore;
     const [core,registered,tasks,skills,legacyModel,profileList,profileStatus,product]=await Promise.all([target.snapshot(),registry.list(),store.listTasks(),store.listSkills(),modelStatus(file),profileStore.list(),profileStore.status(),productClient?.status()]);
     if(owner!==identity||target!==workspace||store!==agentStore||runtime!==agentRuntime)return snapshot();
     let model=profileList.activeId||profileList.revision>1?profileStatus:legacyModel;
@@ -91,8 +125,9 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     if(!productView||productView.authenticated){try{base.writeDemo=await writeSource.snapshot();}catch{base.writeDemo={records:[],approvals:[],unavailable:true};}}
     if(owner!==identity||writeSource!==demoWrite)return snapshot();
     base.demonstration=!productView||productView.authenticated?demo.snapshot():null;
+    base.memory=!productView||productView.authenticated?await memories.snapshot():{revision:0,available:false,entries:[],settings:{rememberEpisodes:false,rememberLessons:false}};
     base.busy=base.busy||demo.active||demo.busy;
-    if(demo!==demonstration)return snapshot();
+    if(demo!==demonstration||memories!==memoryStore)return snapshot();
     if(productView?.authenticated&&!await authorized(owner).catch(()=>false))return snapshot();
     return base;
   }
@@ -203,10 +238,12 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
   }
   async function cancel() {
     const cancelledPlanning=!!planning;planning?.abort();
+    // Mark startup and in-flight runs before awaiting other subsystems, so a late failure is never stored as 'failed'.
+    const startup=startPending;if(startup)startup.cancelled=true;
+    const pendingRun=active;if(pendingRun)pendingRun.cancelled=true;
     const cancelledDemo=await demonstration.cancel({});
     const cancelledAgent=await agentRuntime.cancel();
-    const startup=startPending;
-    if(startup){startup.cancelled=true;await startup.settled;}
+    if(startup)await startup.settled;
     if(!active)return {cancelled:!!startup || cancelledPlanning || cancelledAgent.cancelled || cancelledDemo.cancelled};
     const token=active;token.cancelled=true;
     await token.target.updateRun(token.id,{status:'cancelled',error:{code:'CANCELLED',message:messages.CANCELLED}}).catch(()=>{});
@@ -225,6 +262,25 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     let result;
     switch(action) {
       case 'snapshot':return snapshot();
+      case 'memory.save':return changeSites(async()=>{
+        if(Object.keys(payload).some(key=>!['id','kind','title','content','siteIds','expiresAt','expectedRevision'].includes(key)))throw new Error('MEMORY_INPUT_INVALID');
+        const ids=payload.siteIds||[];if(!Array.isArray(ids)||ids.length>3||new Set(ids).size!==ids.length)throw new Error('MEMORY_INPUT_INVALID');
+        const sites=await agentSites(),siteBindings=ids.map(id=>{const s=sites.find(s=>s.id===id);if(!s)throw new Error('AGENT_SITE_SCOPE');return {id:s.id,origin:s.origin,revision:s.revision};});
+        return memoryStore.save({...(payload.id?{id:payload.id,expectedRevision:payload.expectedRevision}:{}),kind:payload.kind,title:payload.title,content:payload.content,siteBindings,...(payload.expiresAt?{expiresAt:payload.expiresAt}:{}),source:{type:'user_message'},confirmed:true});
+      });
+      case 'memory.enabled':return changeSites(()=>memoryStore.setEnabled(payload));
+      case 'memory.confirm':return changeSites(()=>memoryStore.confirm(payload));
+      case 'memory.settings':return changeSites(()=>memoryStore.updateSettings(payload));
+      case 'memory.forget':await cancel();return changeSites(()=>memoryStore.forget(payload));
+      case 'memory.preview':{
+        requireIdle();const owner=identity,memories=memoryStore,sites=await agentSites();
+        if(typeof payload.query!=='string'||payload.query.length>2000||!Array.isArray(payload.siteIds)||payload.siteIds.length>3)throw new Error('MEMORY_INPUT_INVALID');
+        const siteBindings=payload.siteIds.map(id=>{const s=sites.find(s=>s.id===id);if(!s)throw new Error('AGENT_SITE_SCOPE');return {id:s.id,origin:s.origin,revision:s.revision};});
+        const result=await memories.retrieve({query:payload.query,siteBindings,includeEpisodes:payload.includeEpisodes===true});
+        const skills=await agentStore.listSkills(),available=new Set(siteBindings.map(s=>JSON.stringify(s)));
+        result.recommendedSkills=skills.filter(s=>s.template.siteBindings.every(binding=>available.has(JSON.stringify(binding)))&&[s.name,s.goal].some(t=>t&&payload.query.includes(t.slice(0,6)))).slice(0,3).map(s=>({id:s.id,name:s.name,version:s.version}));
+        if(owner!==identity||memories!==memoryStore||!await authorized(owner))throw new Error('CANCELLED');return result;
+      }
       case 'demo.start':return launchAgent(()=>demonstration.start({goal:payload.goal,siteIds:payload.siteIds,mode:payload.mode}),id=>demonstration.cancel({id}));
       case 'demo.observe':case 'demo.act':case 'demo.handoff':case 'demo.resume':case 'demo.finish':{
         if(active||starting||switching||planning||agentRuntime.busy||configurationPending)throw new Error('BUSY');
@@ -253,7 +309,9 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
           if(owner!==identity||request.signal.aborted)throw new Error('CANCELLED');return result;
         }finally{if(planning===request)planning=null;await notify();}
       }
-      case 'agent.start':return launchAgent(()=>agentRuntime.start({goal:payload.goal,siteIds:payload.siteIds,mode:payload.mode,consent:payload.consent}));
+      case 'agent.start':return launchAgent(()=>agentRuntime.start({goal:payload.goal,siteIds:payload.siteIds,mode:payload.mode,consent:payload.consent,budgetOptions:payload.budgetOptions,enableReflection:payload.enableReflection}));
+      case 'agent.confirmResult':{requireIdle();const result=await agentRuntime.confirmResult(payload);await offerLesson((await agentStore.listTasks()).find(task=>task.id===payload.id));return result;}
+      case 'agent.history.clear':requireIdle();result=await agentRuntime.cleanupHistory(payload);break;
       case 'agent.resume':return launchAgent(async()=>{const task=(await agentStore.listTasks()).find(task=>task.id===payload.id);if(task?.execution==='demonstration')throw new Error('DEMONSTRATION_RESUME_REQUIRED');return agentRuntime.resume({id:payload.id,consent:payload.consent});});
       case 'agent.cancel':{const task=(await agentStore.listTasks()).find(task=>task.id===payload.id);return task?.execution==='demonstration'?demonstration.cancel({id:payload.id}):agentRuntime.cancel(payload.id);}
       case 'agent.skill.save':requireIdle();result=await agentRuntime.saveSkill({taskId:payload.taskId,name:payload.name,pinned:payload.pinned});break;

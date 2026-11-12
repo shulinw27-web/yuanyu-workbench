@@ -1,8 +1,40 @@
 # 测试与回归报告
 
-日期：2026-11-07。状态：个人版/企业入口、推广服务、多模型选择、参数化及合成写入增强回归通过；生产与尚未开发部分按唯一清单保留。
+日期：2026-11-13。状态：个人版/企业入口、推广服务、多模型选择、参数化及合成写入增强回归通过；M6 A阶段记忆、统一工具、预算与结果验证，以及B阶段有限反思与自我修正已收敛为本机合成回归全绿；C阶段、真实模型/业务效果对照、生产与尚未开发部分按唯一清单保留。另记录分支改名与推送前复核，不新增功能验收。
 
 本报告只记录独立新项目，旧项目测试结果不迁移为本项目证据。输入均为隔离合成数据，无真实企业系统、OA身份、生产数据或收费模型调用。
+
+## 分支改名与推送前复核（2026-11-13）
+
+按用户要求把本地`codex/personal`改名为`personal`、`codex/enterprise`改名为`enterprise`；只改分支名，不改提交历史，两分支仍为独立根提交。远程原有的`codex/personal`保留为改名前的历史别名，不再更新；企业分支不上传公开仓库。
+
+- 推送前复核：Node **v24.14.1** 下`npm test` **242/242通过、无跳过**，`npm run check`通过（117个文件）；输入仍为隔离合成数据，无真实模型、企业系统或付费调用。
+- 同步维护：[AGENTS.md](../AGENTS.md)、[版本说明](EDITIONS.md)、[唯一清单](PLAN.md)、[模块契约](CONTRACTS.md)、[使用指南](GUIDE.md)、[README](../README.md)中的当前分支名与推送约定；历史验证记录保留原分支名并加注现名。`.gitignore`新增`.workbuddy/`，本机工作记录不进入公开仓库。
+- 证据边界：本轮是分支命名与文档同步，不新增功能验收；M6父项、W27及真实环境验收仍按[唯一清单](PLAN.md)保留。
+
+## M6 B 阶段：有限反思与自我修正（2026-11-13）
+
+本轮继续在既有未提交的M6改动上做最小增量接线，不生成第二份并行清单。输入均为隔离合成数据；无真实模型、企业系统或付费调用。
+
+- 运行环境：仓库外Node **v24.14.1**（`D:/wsl/workspace/node/node.exe`，Windows）。默认PATH为Node v22.22.2，不满足≥24要求；`readiness`/`product-client`在Node 22下的失败属于环境差异，不通过放宽预检消除。
+- 命令与结果：`npm test` **242/242通过、无跳过**（新增12项B阶段用例，连续复跑一致）；`npm run check`通过，检查117个文件的语法与Markdown本地链接。接线过程中曾出现`account-admin.test.mjs`两条`fetch failed / bad port`的本机端口偶发错误，随后连续全量复跑未再出现，未计入代码回归。
+- 接线1（错误分类与共享额度）：`src/agent/recovery-policy.mjs`的`classifyRecovery`从孤立模块接入`runBrowserToolLoop.reflect`与`replayRecipe`的失败分支；`onBudget`返回主进程`claimBudget`的累计`used`，`used.corrections`成为跨attempt唯一修正裁决。越权、撤权、写入确认、提供方/额度/费用/限流/超时、未知回执、页面结构与模型配置变化一律停止；登录/MFA交人工接管。修正后重复同一调用以`AGENT_CORRECTION_NO_CHANGE`停止。
+- 接线2（修正与复验可见）：新增`task.reflections`严格白名单记录（problemCode / evidenceIds / proposedCorrection / checkResult / nextAction），store按字段与枚举校验；`onReflection`在修正开始与独立Verifier复验结束后各写一次，任务卡展示问题、动作、复验结论与下一步。修正后的动作仍走原工具策略、授权复验与Verifier；不自动改Skill、权限或记忆。
+- 接线3（脱敏经验候选）：记忆设置新增独立`rememberLessons`（默认关闭），仅本人已完成且有复验记录的任务生成`kind:'lesson'`的`proposed`候选，7天未确认清理、需`memory.confirm`才生效；内容只含安全错误码与复验结论，同一运行ID不重复生成。控制器在`agent.confirmResult`后补生成，候选保存失败不影响任务完成。
+- 新增回归（`test/reflection-recovery.test.mjs`，12项）：分类边界与停止码；开启/关闭额外复核；一次修正后独立Verifier复验与预算占用；共享预算拒绝第二次修正；无变化调用停止；越权/费用/超时/未知结果不重试；Skill重放与模型复核共用额度、登录错误交人工；修正记录白名单与继续保留；候选开关、默认待确认与到期清理；控制器闭环验证开关关闭/打开两种情况下候选生成、记录脱敏及不自动保存Skill。
+- 证据边界：W26两个子项为本机合成验证；W24/W25/W26父项仍不关闭，W27（C阶段）与真实模型/业务的成功率、费用、人工纠正次数对照未开始。真实网站、真实模型和生产业务没有通过本轮验证；W13—W18、W23父项保持未关闭。详细边界见[模块契约](CONTRACTS.md)与[唯一清单](PLAN.md)。
+
+## M6 A 阶段回归收敛（2026-11-13）
+
+本轮在既有未提交的M6改动上做最小增量修复并回写工作清单与模块契约，未生成第二份并行清单。输入均为隔离合成数据；无真实模型、企业系统或付费调用。
+
+- 运行环境：使用仓库外的Node **v24.14.1**（`D:/wsl/workspace/node/node.exe`，Windows）。默认PATH上的Node v22.22.2不满足项目≥24要求，会让3条`readiness`预检（`NODE24_RUNTIME`）与1条`product-client`用例失败；这是环境差异，不是代码回归，也不能通过放宽预检来消除。
+- 命令与结果：`npm test` **230/230通过，无跳过**（连续3次）；`npm run check`通过，检查115个文件的语法与Markdown本地链接。有效证据均取自Node 24；Node 22下的失败数不与本轮代码结论混记。
+- 修复1（任务/步骤状态混用）：`runBrowserToolLoop`把任务级`awaiting_review`写进checkpoint，runtime原样落到步骤状态，触发`AGENT_INPUT_INVALID`，兼容网关任务被标为failed。现把该状态映射为已完成步骤状态，任务状态仍为`awaiting_review`；任务与步骤状态边界已写入[模块契约](CONTRACTS.md)。
+- 修复2（启动取消竞态）：`cancel()`原先在`await demonstration.cancel`/`agentRuntime.cancel`之后才设置启动标记，采购运行在等待期间因缺少合成凭据写成`failed`。12次循环复现中7次复现；现在任何await之前先标记`startPending`与在途`active`，同脚本12次全部为`cancelled`且未创建浏览器。
+- 修复3（记忆输入过滤）：`memoryText`缺少URL内嵌凭据规则，`https://user:password@example.test`未被拒绝。SECRET规则补充`scheme://user:pass@`形态；原有密码、Bearer、JWT、HTML标签与提示注入检查不变，新增`memory-store`严格输入用例通过。
+- 回归语义更新：开放网页任务现在为`awaiting_review`→`agent.confirmResult`明确核对→`completed`，之后才可保存Skill。`controller.test.mjs`新增"未核对不能保存Skill"断言；`demonstration-controller.test.mjs`的HTTPS只读Skill重放仍为0次模型调用、无需模型配置或页面外发同意，仅增加结果确认步骤。两处是M6验证语义的适配，不是放宽原有权限或来源校验。
+- 证据边界（A阶段完成时）：W24/W25子项为本机合成验证；当时`src/agent/recovery-policy.mjs`的`classifyRecovery`仍是独立分类模块、未接入执行链，W26/W27及真实模型/业务的成功率、费用与人工纠正对照未验收。该状态已由同日B阶段接线取代（见上文），W27与真实效果对照仍未开始。W13—W18、W23父项保持未关闭，原因见[PLAN](PLAN.md)第9节。本轮没有把准备就绪当作真实环境通过。
 
 ## 清单核对与推广运维准备（2026-11-07）
 
@@ -47,7 +79,7 @@
 
 ## 个人开源分支验证（2026-11-06）
 
-`codex/personal`已排除企业OIDC/HTTP共享适配器及6项对应专项测试，使用MIT许可证。分支拆分后`npm test`为**135/135通过**，`npm run check`通过，`npm run test:desktop`完整个人任务、Mock兼容、注册/额度及产品UI回归通过。下文141项及企业适配验证为拆分前完整基线证据，不表示个人包包含企业源码。便携包构建器现在会携带本分支LICENSE；专项测试验证许可证入包。
+`codex/personal`（2026-11-13改名为`personal`）已排除企业OIDC/HTTP共享适配器及6项对应专项测试，使用MIT许可证。分支拆分后`npm test`为**135/135通过**，`npm run check`通过，`npm run test:desktop`完整个人任务、Mock兼容、注册/额度及产品UI回归通过。下文141项及企业适配验证为拆分前完整基线证据，不表示个人包包含企业源码。便携包构建器现在会携带本分支LICENSE；专项测试验证许可证入包。
 
 ## 2026-11-05 基础验证（保留历史证据）
 

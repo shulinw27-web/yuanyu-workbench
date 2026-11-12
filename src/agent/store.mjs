@@ -1,14 +1,15 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { randomUUID,createHash } from 'node:crypto';
 import {isAccountIdentity} from '../product/client.mjs';
+import {validateTaskBudget,claimTaskBudget,beginBudgetLease,finishBudgetLease} from './budget.mjs';
 
 const REPOSITORY = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const ROOTS = new Map();
 const COMPANIES = Object.freeze({ alice: 'mock-acme', bob: 'mock-acme', outsider: 'mock-other' });
-const STATUSES = new Set(['running', 'awaiting_user', 'interrupted', 'completed', 'failed', 'cancelled']);
-const STOPPED = new Set(['interrupted', 'completed', 'failed', 'cancelled']);
+const STATUSES = new Set(['running', 'awaiting_user', 'awaiting_review', 'interrupted', 'completed', 'failed', 'cancelled']);
+const STOPPED = new Set(['awaiting_review','interrupted', 'completed', 'failed', 'cancelled']);
 const MODES = new Set(['mock_browser', 'compatible_browser']);
 const SECRET_TEXT = /(?:\b(?:password|passwd|secret|(?:access[_-]?|refresh[_-]?)?token|authorization|cookie|api[_-]?key|otp|mfa[_ -]?code)\s*[:=]|(?:密码|口令|验证码|访问令牌)\s*[:：=]|\bBearer\s+[a-zA-Z0-9._~-]+|\beyJ[a-zA-Z0-9_-]{12,}\.[a-zA-Z0-9_-]+\.|<\/?(?:html|body|script)\b|<!doctype)/i;
 const SENSITIVE_LOCATOR = /password|passwd|secret|token|credential|authorization|cookie|username|login|email|otp|mfa|密码|口令|验证码|登录|账号|用户名|提交|删除|审批|支付|付款|保存|submit|delete|approve|pay(?:ment)?|save/i;
@@ -150,8 +151,33 @@ function replayProgress(input,task){
   if(input.reason!==undefined)assert(['STALE_REFERENCE','PAGE_STRUCTURE_CHANGED','LOGIN_REQUIRED'].includes(input.reason),'AGENT_REPLAY_INVALID','重放原因无效。');
   return clone(input);
 }
+// Strict, code-only reflection records. No page text, provider reasoning or free-form model prose.
+function reflections(input){
+  const corrections=new Set(['REOBSERVE_CURRENT_SITE','CORRECT_TOOL_INPUT','NONE']);
+  const results=new Set(['pending','verified','needs_review','rejected']);
+  const actions=new Set(['reobserve','deliver','await_user_review','stop']);
+  assert(Array.isArray(input)&&input.length<=5,'AGENT_INPUT_INVALID','修正记录数量无效。');
+  const seen=new Set();
+  return input.map(entry=>{
+    fields(entry,['id','problemCode','evidenceIds','proposedCorrection','checkResult','nextAction']);
+    identifier(entry.id);identifier(entry.problemCode);
+    assert(!seen.has(entry.id),'AGENT_INPUT_INVALID','修正记录标识重复。');seen.add(entry.id);
+    assert(corrections.has(entry.proposedCorrection)&&results.has(entry.checkResult)&&actions.has(entry.nextAction),'AGENT_INPUT_INVALID','修正记录格式无效。');
+    assert(Array.isArray(entry.evidenceIds)&&entry.evidenceIds.length<=30,'AGENT_INPUT_INVALID','修正记录证据引用无效。');
+    entry.evidenceIds.forEach(identifier);
+    return clone(entry);
+  });
+}
+function verification(input){
+  fields(input,['status','code','evidenceIds','reviewedAt']);
+  assert(['verified','needs_review','user_confirmed'].includes(input.status),'AGENT_VERIFICATION_INVALID','结果验证状态无效。');
+  identifier(input.code);assert(Array.isArray(input.evidenceIds)&&input.evidenceIds.length<=30,'AGENT_VERIFICATION_INVALID','结果证据引用无效。');input.evidenceIds.forEach(identifier);
+  if(input.reviewedAt!==undefined)text(input.reviewedAt,80);return clone(input);
+}
+function sourceFingerprint(template){return createHash('sha256').update(JSON.stringify({goalTemplate:template.goalTemplate,siteBindings:template.siteBindings,recipe:template.recipe})).digest('hex');}
+function sourceReceipt(input){fields(input,['taskId','fingerprint','completedAt']);identifier(input.taskId);assert(typeof input.fingerprint==='string'&&/^[a-f0-9]{64}$/.test(input.fingerprint));text(input.completedAt,80);return clone(input);}
 function validateTask(task) {
-  fields(task, ['id', 'kind', 'goal', 'mode', 'execution', 'skillId','skillVersion','parameterValues', 'replay', 'status', 'steps', 'message', 'error', 'awaitingSiteId', 'trace', 'siteBindings', 'createdAt', 'updatedAt', 'finishedAt', 'sessionId', 'attempt']);
+  fields(task, ['id', 'kind', 'goal', 'mode', 'execution', 'skillId','skillVersion','parameterValues', 'replay', 'budget','verification','contextSummary','reflections', 'status', 'steps', 'message', 'error', 'awaitingSiteId', 'trace', 'siteBindings', 'createdAt', 'updatedAt', 'finishedAt', 'sessionId', 'attempt']);
   identifier(task.id);
   assert(task.kind === 'browser' && STATUSES.has(task.status) && MODES.has(task.mode)
     && Number.isSafeInteger(task.attempt) && task.attempt >= 1, 'AGENT_STORE_INVALID', '浏览器任务类型或状态无效。');
@@ -169,6 +195,10 @@ function validateTask(task) {
     for(const [name,value]of Object.entries(task.parameterValues)){assert(/^[a-z][a-z0-9_]{0,31}$/.test(name)&&!['constructor','prototype','__proto__'].includes(name));text(value,200,0);}
   }
   if(task.replay!==undefined)replayProgress(task.replay,task);
+  if(task.budget!==undefined)validateTaskBudget(task.budget);
+  if(task.verification!==undefined)verification(task.verification);
+  if(task.reflections!==undefined)reflections(task.reflections);
+  if(task.contextSummary!==undefined){fields(task.contextSummary,['requiredSiteIds','hasSelectedMemory']);assert(Array.isArray(task.contextSummary.requiredSiteIds)&&task.contextSummary.requiredSiteIds.length<=3&&task.contextSummary.requiredSiteIds.every(id=>siteBindings.some(site=>site.id===id))&&typeof task.contextSummary.hasSelectedMemory==='boolean');}
   if (task.message !== undefined) text(task.message, 2000, 0);
   if (task.error !== undefined) {
     fields(task.error, ['code', 'message']);
@@ -275,19 +305,21 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
       const file = path.join(current, 'state.json');
       const state = await readJSON(file) ?? { schemaVersion: 1, companyId: identity.companyId, userId: identity.userId, tasks: [], skills: [] };
       try {
-        fields(state, ['schemaVersion', 'companyId', 'userId', 'tasks', 'skills']);
+        fields(state, ['schemaVersion', 'companyId', 'userId', 'tasks', 'skills','sourceReceipts']);
         assert(state.schemaVersion === 1 && state.companyId === identity.companyId && state.userId === identity.userId
           && Array.isArray(state.tasks) && state.tasks.length <= 1000 && Array.isArray(state.skills) && state.skills.length <= 1000);
         state.tasks.forEach(validateTask);
         state.skills.forEach(validateSkill);
+        if(state.sourceReceipts!==undefined){assert(Array.isArray(state.sourceReceipts)&&state.sourceReceipts.length<=1000);state.sourceReceipts.forEach(sourceReceipt);assert(new Set(state.sourceReceipts.map(entry=>entry.taskId)).size===state.sourceReceipts.length);}
         for (const key of ['tasks', 'skills']) assert(new Set(state[key].map((entry) => entry.id)).size === state[key].length);
-        for (const skill of state.skills) assert(state.tasks.some((task) => task.id === skill.source.taskId && task.status === 'completed'), 'AGENT_STORE_INVALID', '技能缺少本人已完成任务来源。');
+        for (const skill of state.skills) assert(state.tasks.some((task) => task.id === skill.source.taskId && task.status === 'completed')||(state.sourceReceipts??[]).some(receipt=>receipt.taskId===skill.source.taskId&&receipt.fingerprint===sourceFingerprint(skill.template)), 'AGENT_STORE_INVALID', '技能缺少本人已完成任务来源。');
       } catch (error) {
         if (error.code === 'AGENT_UNSAFE_PATH') throw error;
         fail('AGENT_STORE_INVALID', '浏览器任务存储无法验证。');
       }
       let interrupted = false;
       for (const task of state.tasks) {
+        if(task.budget?.lease&&task.sessionId!==root.sessionId){task.budget=finishBudgetLease(task.budget,{leaseId:task.budget.lease.id,abandoned:true});interrupted=true;}
         if ((task.status === 'running'||task.execution==='demonstration'&&task.status==='awaiting_user') && task.sessionId !== root.sessionId) {
           Object.assign(task, { status: 'interrupted', message: task.execution==='demonstration'?'上次示范已中断，请重新开始示范。':'上次浏览器任务被中断，请由用户选择继续。', updatedAt: now() });
           task.finishedAt = task.updatedAt;
@@ -320,7 +352,7 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
     listSkills() { return operation((state) => clone(state.skills).sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt))); },
     createTask(input) {
       return operation(async (state, save) => {
-        fields(input, ['goal', 'siteBindings', 'mode', 'execution', 'skillId','skillVersion','values']);
+        fields(input, ['goal', 'siteBindings', 'mode', 'execution', 'skillId','skillVersion','values','budget','contextSummary']);
         assert(MODES.has(input.mode), 'AGENT_INPUT_INVALID', '浏览器任务运行模式无效。');
         if(input.execution!==undefined)assert(input.execution==='demonstration'&&input.skillId===undefined,'AGENT_INPUT_INVALID','示范任务不能携带工作流引用。');
         const goal = text(input.goal, 2000).trim();
@@ -337,15 +369,17 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
         const task = { id: randomUUID(), kind: 'browser', goal, mode: input.mode, siteBindings,
           status: 'running', steps: [], trace: [], attempt: 1, createdAt: timestamp, updatedAt: timestamp, sessionId: root.sessionId };
         if(input.execution!==undefined)task.execution=input.execution;
+        if(input.budget!==undefined)task.budget=validateTaskBudget(input.budget);
+        if(input.contextSummary!==undefined)task.contextSummary=clone(input.contextSummary);
         if (input.skillId !== undefined){const skill=skillById(state,input.skillId);task.skillId=input.skillId;task.skillVersion=skill.version;task.parameterValues=resolveSkillParameters(skill,input.values);}
-        state.tasks.push(task);
+        validateTask(task);state.tasks.push(task);
         await save();
         return taskView(task);
       });
     },
     updateTask(id, patch) {
       return operation(async (state, save) => {
-        fields(patch, ['status', 'steps', 'message', 'error', 'awaitingSiteId', 'trace', 'replay', 'expectedAttempt']);
+        fields(patch, ['status', 'steps', 'message', 'error', 'awaitingSiteId', 'trace', 'replay', 'verification', 'reflections', 'expectedAttempt']);
         const task = taskById(state, id);
         assert(!STOPPED.has(task.status), 'AGENT_TASK_TERMINAL', '已停止任务不能接收迟到结果，请由用户显式继续。');
         if (patch.expectedAttempt !== undefined) assert(patch.expectedAttempt === task.attempt, 'AGENT_TASK_STALE', '此结果来自旧一轮任务。');
@@ -357,6 +391,8 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
         if (patch.message !== undefined) next.message = text(patch.message, 2000, 0);
         if (patch.trace !== undefined) next.trace = trace(patch.trace, task.siteBindings);
         if(patch.replay!==undefined)next.replay=replayProgress(patch.replay,task);
+        if(patch.verification!==undefined)next.verification=verification(patch.verification);
+        if(patch.reflections!==undefined)next.reflections=reflections(patch.reflections);
         if (patch.error !== undefined) {
           assert(['failed', 'cancelled', 'interrupted'].includes(patch.status), 'AGENT_INPUT_INVALID', '仅失败或中断任务可以记录错误。');
           fields(patch.error, ['code', 'message']);
@@ -376,6 +412,32 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
         return taskView(task);
       });
     },
+    claimBudget(id,input){return operation(async(state,save)=>{
+      fields(input,['kind','inputBytes','expectedAttempt']);const task=taskById(state,id);
+      assert(task.status==='running'&&input.expectedAttempt===task.attempt,'AGENT_TASK_STALE','预算预留来自旧任务。');
+      assert(task.budget,'AGENT_BUDGET_LEGACY','旧任务没有可信累计预算，请新建任务。');
+      task.budget=claimTaskBudget(task.budget,input);await save();return clone(task.budget);
+    });},
+    beginBudget(id,{expectedAttempt}){return operation(async(state,save)=>{
+      const task=taskById(state,id);assert(task.status==='running'&&task.attempt===expectedAttempt,'AGENT_TASK_STALE','执行时间预留来自旧任务。');
+      assert(task.budget,'AGENT_BUDGET_LEGACY','旧任务没有可信累计预算，请新建任务。');task.budget=beginBudgetLease(task.budget);await save();return clone(task.budget);
+    });},
+    finishBudget(id,{expectedAttempt,leaseId,elapsedMs}){return operation(async(state,save)=>{
+      const task=taskById(state,id);assert(task.attempt===expectedAttempt,'AGENT_TASK_STALE','执行时间结算来自旧任务。');
+      task.budget=finishBudgetLease(task.budget,{leaseId,elapsedMs});await save();return clone(task.budget);
+    });},
+    confirmResult(id,input){return operation(async(state,save)=>{
+      fields(input,['confirmed','expectedAttempt']);const task=taskById(state,id);
+      assert(input.confirmed===true&&input.expectedAttempt===task.attempt,'AGENT_TASK_STALE','请刷新后确认本轮结果。');
+      assert(task.status==='awaiting_review'&&task.verification?.status==='needs_review','AGENT_RESULT_NOT_REVIEWABLE','此任务不等待结果核对。');
+      task.status='completed';task.updatedAt=now();task.finishedAt=task.updatedAt;task.verification={...task.verification,status:'user_confirmed',code:'USER_CONFIRMED_RESULT',reviewedAt:task.updatedAt};await save();return taskView(task);
+    });},
+    cleanupTasks(input){return operation(async(state,save)=>{
+      fields(input,['before','confirmed']);assert(input.confirmed===true&&typeof input.before==='string'&&Number.isFinite(Date.parse(input.before)),'AGENT_INPUT_INVALID','请确认清理时间范围。');
+      const selected=state.tasks.filter(task=>STOPPED.has(task.status)&&task.status!=='awaiting_review'&&Date.parse(task.updatedAt)<Date.parse(input.before));
+      for(const task of selected){const sourced=state.skills.filter(skill=>skill.source.taskId===task.id);if(sourced.length){state.sourceReceipts??=[];if(!state.sourceReceipts.some(receipt=>receipt.taskId===task.id))state.sourceReceipts.push({taskId:task.id,fingerprint:sourceFingerprint(sourced[0].template),completedAt:task.finishedAt??task.updatedAt});}}
+      state.tasks=state.tasks.filter(task=>!selected.includes(task));const sources=new Set(state.skills.map(skill=>skill.source.taskId));state.sourceReceipts=(state.sourceReceipts??[]).filter(receipt=>sources.has(receipt.taskId));await save();return {deleted:selected.length,sourceReceipts:state.sourceReceipts.length};
+    });},
     // Trusted negative transition: a demonstrated completion is not accepted until
     // its final authorization check succeeds. Never exposed as a renderer action.
     invalidateDemonstration(id,patch){
@@ -417,6 +479,7 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
         fields(input, ['taskId', 'name', 'pinned']);
         const task = taskById(state, input.taskId);
         assert(task.status === 'completed', 'AGENT_TASK_NOT_COMPLETED', '只有本人已完成的浏览器任务可以保存为技能。');
+        assert(!task.verification||['verified','user_confirmed'].includes(task.verification.status),'AGENT_RESULT_UNVERIFIED','请先核对任务结果再保存技能。');
         const name = text(input.name, 100).trim();
         assert(name && (input.pinned === undefined || typeof input.pinned === 'boolean'), 'AGENT_INPUT_INVALID', '技能名称或置顶状态无效。');
         assert(task.trace.length > 0, 'AGENT_TRACE_REQUIRED', '此任务缺少可安全回放的操作，不能保存为技能。');
