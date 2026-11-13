@@ -40,6 +40,8 @@ task.plan接收 `{text,month}` -> `{supported,mode:'preset_mock',message,month,r
 
 UI负责界面文件 src/ui/*；不直接访问Node和文件系统。凭据表单提交后清空密码，绝不缓存localStorage。公开仅指公司内部Mock目录。
 
+本机合成演示边界：仅当可信主进程`snapshot.product.deployment==='local_demo'`时，`src/ui/demo-account.mjs`的冻结合成常量才允许预填个人账号表单与两个内建合成站点的凭据弹窗；`configured`/`unconfigured`等部署一律不预填。预填值来自前端公开合成常量，不从凭据库解密或向渲染器回传真实密码，提交/退出/切换账号后清空，判断逻辑有单测覆盖。`src/ui/styles.css`用`scrollbar-width:none`与`::-webkit-scrollbar{display:none}`隐藏默认滚动条但保留滚动能力，不禁用overflow。
+
 ## 后续增强接口（2026-11-05）
 
 - 私有state schema2：workflow新增description/enabled及不可变历史，run绑定workflowVersion。`workflow.edit{id,name?,description?,month?,expectedVersion}`、`workflow.versions{id}`、`workflow.restore{id,version,expectedVersion}`、`workflow.enabled{id,enabled,expectedVersion}`；内容/状态变化撤旧发布、清verified，恢复创建新revision。
@@ -125,7 +127,7 @@ UI负责界面文件 src/ui/*；不直接访问Node和文件系统。凭据表�
 
 输入仅task/month/signal，预期答案只在本地评分；报告区分requestsAttempted/networkRequests/覆盖率，不回传原始模型输出或秘密。CLI不执行浏览器工具；离线通过或固定规划得分不代表真实模型、页面理解或生产业务验收。
 
-## M6 记忆、统一工具、结果验证与有限修正（2026-11-13，A/B 阶段）
+## M6 记忆、统一工具、结果验证与有限修正（2026-11-13，A/B/C 阶段）
 
 本节只描述本机合成验证过的接口，完成状态以[唯一工作清单](PLAN.md)和[测试报告](TEST_REPORT.md)为准，不代表真实模型或生产业务验收。
 
@@ -138,4 +140,8 @@ UI负责界面文件 src/ui/*；不直接访问Node和文件系统。凭据表�
 - B阶段错误分类：`classifyRecovery({code,effectState,correctionsUsed})`现由`runBrowserToolLoop`与`replayRecipe`共同调用，只返回`repair_once / handoff / stop`。仅`effectState==='not_started'`且`correctionsUsed===0`的`STALE_REFERENCE / INVALID_BROWSER_ACTION / AGENT_TOOL_INPUT_INVALID`允许一次修正；登录/MFA交人工接管；撤权、取消、越权/写入确认、来源或模型配置变化、提供方/额度/费用/限流/超时、未知回执、页面结构变化与预算耗尽一律停止。`onBudget`返回主进程累计预算，`used.corrections`为跨attempt唯一裁决依据，确定性引用恢复与可选模型复核不再各开一套计数；相同问题码或修正后重复同一调用立即以`AGENT_CORRECTION_NO_CHANGE`停止。
 - 可选模型复核：仅在`agent.start.enableReflection===true`时启用，每任务最多一次，先预留`correction`与`reflection`预算，再向当前请求追加结构化反馈消息；反馈只含安全错误码、站点ID和限定指令，不含页面正文或模型推理。修正后的每个动作仍经过原工具schema、执行前后授权复验与`Verifier`；完成状态仍由独立验证决定，模型复核不能单独升级为"已验证完成"。
 - 结构化修正记录：`task.reflections`最多5条，字段严格限制为`id / problemCode / evidenceIds / proposedCorrection / checkResult / nextAction`；`proposedCorrection`仅`REOBSERVE_CURRENT_SITE / CORRECT_TOOL_INPUT / NONE`，`checkResult`仅`pending / verified / needs_review / rejected`，`nextAction`仅`reobserve / deliver / await_user_review / stop`。证据ID来自可信执行器；记录不含网页正文、模型思维链或自由文本，`onReflection`在修正开始与复验结束时各写一次，任务卡展示问题、动作与复验结果。store按字段白名单校验，拒绝伪造字段、页面文本与超量；继续任务保留记录，迟到或取消后的结果不得落盘。
-- 脱敏经验候选：`snapshot.memory.settings`新增独立开关`rememberLessons`（默认关闭，与`rememberEpisodes`分别控制）。仅本人已完成、存在`verified / needs_review`复验记录、且开关打开时，控制器才用安全错误码与复验结论生成一条`kind:'lesson'`候选；`confirmed:false`即`proposed`，7天未确认清理，必须`memory.confirm`后才生效。同一运行ID不重复生成；候选不能自动修改永久Skill、白名单、预算或权限，也不能作为可信业务规则。候选是尽力而为，保存失败不影响任务完成。W27的摘要检索、失效冲突与Skill推荐、以及真实模型/业务效果对照仍按[清单](PLAN.md)保留。
+- 脱敏经验候选：`snapshot.memory.settings`新增独立开关`rememberLessons`（默认关闭，与`rememberEpisodes`分别控制）。仅本人已完成、存在`verified / needs_review`复验记录、且开关打开时，控制器才用安全错误码与复验结论生成一条`kind:'lesson'`候选；`confirmed:false`即`proposed`，7天未确认清理，必须`memory.confirm`后才生效。同一运行ID不重复生成；候选不能自动修改永久Skill、白名单、预算或权限，也不能作为可信业务规则。候选是尽力而为，保存失败不影响任务完成。C阶段已按[清单](PLAN.md)补齐本机可验证部分：
+- `memory.diff{id,expectedRevision}`只读返回`{id,revision,kind,status,current,history}`：`current/history`严格限于标题、内容、核实时间、有效期、revision与状态；历史密文解密后仍按本人/记录/revision绑定校验，拒绝篡改密文、跨身份、过期CAS与伪造字段，不返回密文、owner、来源或派生引用。界面只对stale/superseded条目提供"查看差异"，记忆revision变化即清空差异展示，差异不会自动采纳旧事实。
+- 摘要选择留存：`rememberEpisodes`打开后，控制器只为本人的completed任务生成一条`kind:'episode'`的`proposed`候选（7天未确认清理、同一任务去重），必须`memory.confirm`后才active（确认后30天）；内容只含执行模式与步骤数。`offerEpisode`在`onTaskMemory`与`agent.confirmResult`两条路径调用，修复待核对任务确认结果后不生成摘要的缺陷。未确认候选不进入`memory.preview`或上下文外发。
+- 来源与恢复：`agent.history.clear`为被Skill引用的已结束任务保留最小不可执行来源凭证（taskId、模板指纹、完成时间），清理后Skill仍通过`validateState`来源校验；备份精确白名单只导出`memory/<company>/<user>/state.json`，恢复由`pauseRestoredMemory`把全部条目置paused，不解密、不自动启用，需逐条确认；`forget`级联清除全部历史版本、候选与派生载荷并保留最小删除标记。
+- 证据边界：`memory.preview.recommendedSkills`只按当前站点绑定与名称做本机匹配，不读取记忆正文、不自动运行或修改Skill；账号撤权端到端回归已由`test/memory-consent-revocation.test.mjs`补齐（撤权后整体隐藏、IPC拒绝、跨账号隔离、选定记忆外发逐次同意、请求间记忆修订使上下文失效）；真实模型/业务的成功率与费用/人工纠正次数对照仍未验收，不自动扩大反思范围。W24—W27父项按A→B→C整体验收保持未关闭。

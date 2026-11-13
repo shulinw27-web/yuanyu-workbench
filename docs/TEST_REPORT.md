@@ -1,8 +1,55 @@
 # 测试与回归报告
 
-日期：2026-11-13。状态：个人版/企业入口、推广服务、多模型选择、参数化及合成写入增强回归通过；M6 A阶段记忆、统一工具、预算与结果验证，以及B阶段有限反思与自我修正已收敛为本机合成回归全绿；C阶段、真实模型/业务效果对照、生产与尚未开发部分按唯一清单保留。另记录分支改名与推送前复核，不新增功能验收。
+日期：2026-11-13。状态：个人版/企业入口、推广服务、多模型选择、参数化及合成写入增强回归通过；M6 A阶段记忆、统一工具、预算与结果验证，B阶段有限反思与自我修正，以及C阶段可本机验证的生命周期能力已收敛为本机合成回归全绿；账号撤权端到端回归已补齐，真实模型/业务效果对照、生产与尚未开发部分按唯一清单保留。另记录记忆撤权与外发授权回归、全量验证、界面体验、本机演示测试账号、取消竞态修复、分支改名与推送前复核，不新增真实环境验收。
 
 本报告只记录独立新项目，旧项目测试结果不迁移为本项目证据。输入均为隔离合成数据，无真实企业系统、OA身份、生产数据或收费模型调用。
+
+## 记忆撤权与选定记忆外发授权回归（2026-11-13）
+
+本轮只补回归证据、不改功能代码。先用隔离合成账号诊断撤权链路：确认`invoke()`入口的全局授权复验已使撤权后所有记忆IPC返回`AUTH_REQUIRED`、`snapshot.memory`整体隐藏，因此**未发现需要修复的安全缺口**，不为此改动控制器。
+
+- 新增`test/memory-consent-revocation.test.mjs`（4项）：
+  - 账号撤权后`snapshot.memory`为`{revision:0,available:false,entries:[],settings:...}`且`identity:null`；`memory.preview/diff/save/enabled/confirm/settings/forget`全部被拒；重新登录恢复本人同一条记忆、没有撤权期间的写入；切换到另一账号后记忆为空，写回本人后仍只见本人记忆。
+  - 选定记忆外发必须逐次明确同意：缺`consent.memory`、重复或不存在的`memoryIds`均被拒，且拒绝发生在模型请求之前（请求数组为空）。
+  - 正常选择时，记忆仅作为`Task-scoped reference DATA`出现在本次工作上下文；首次模型请求含所选记忆文本，不含页面正文或合成密码。
+  - 请求间用第二个记忆库实例修订所选记忆后，`memory.check()`失效，任务以`AGENT_CONTEXT_CHANGED`停止且不标为完成。
+- 验证：Node **v24.14.1** 下`npm test` **256/256通过、无跳过**；`npm run check`通过，检查122个文件；`npm run test:desktop`复跑8/8阶段通过（详见下文全量验证节）。
+- 证据边界：以上均为本机合成回归，补上W27清单中「账号撤权的端到端回归」子项，真实模型/业务的成功率、费用与人工纠正次数对照仍保持未勾选；M6父项按A→B→C整体验收不关闭，W23及W13—W18父项仍按[唯一清单](PLAN.md)保留。工作区仍未提交、未推送。
+
+## 全量验证：单测、UI、功能与用户交互（2026-11-13）
+
+本轮只做验证、不改代码。输入全部为隔离合成数据；没有真实模型、企业系统、OA身份或付费调用。环境为仓库外Node **v24.14.1**（`D:/wsl/workspace/node/node.exe`，Windows）；默认PATH的v22.22.2不满足项目≥24要求，宿主环境另注入了`ELECTRON_RUN_AS_NODE=1`。
+
+- 单测与静态检查：`npm test`连续两次均 **252/252通过、无跳过、无失败**；`npm run check`通过，检查121个文件的JavaScript语法与Markdown本地链接。
+- 真实Electron UI／功能／交互闭环：`npm run test:desktop`连续两次均 **8/8阶段通过、0失败**，覆盖系统加密与持久重开、双网页真实读取与10月/9月核对、个人Skill、同公司独立凭据、跨公司拒绝、撤回与取消、错误登录；隔离备份/新目录恢复；真实页面计划确认→执行→产物→保存→发布→同事导入→换月复用（1440/1024无水平溢出）；UI增强（v2—v5修订、停用/启用、撤旧发布、站点注册、模型未配置禁用、深浅主题、1920/1366布局）；交互浏览器可信填充、人工登录/MFA接管、只读筛选、页面变化与过期引用、敏感内容过滤、业务写入拒绝；参数化浏览器Skill；通用浏览器UI的计划确认→登录接管→网页核对→保存置顶→首页重跑；受控示范录制与一次性恢复。链路使用真实BrowserWindow、主进程IPC、preload隔离、OS账号加密与独立Chromium网页。
+- 离线模型规划评估：`npm run model:eval -- --offline`返回`mode:offline`、`status:not_run`、14道固定配方题、`requestsAttempted:0`、`networkRequests:0`、`scorePercent:null`。这验证题库与评分链路可用，**不代表真实模型质量或生产业务验收**；live入口需另行提供付费许可、仓库外配置与请求上限。
+- 只读部署就绪预检：用仓库外临时占位配置运行`npm run readiness`，结果`ready:false` / `noticeCode:CONFIGURATION_ONLY_NOT_LIVE_VERIFIED`。`NODE24_RUNTIME`、`SQLITE_RUNTIME`、`CONFIG_FILE_SAFE`、`CONFIG_SCHEMA`、`PRODUCTION_MODE`、`LOOPBACK_BINDING`、`PRIVATE_DATA_DIRECTORY`、`PERSONAL_QUOTA`、`PROMOTION_BUDGET`、`DEVELOPER_CONTACT`均OK；占位HTTPS域名`PUBLIC_HTTPS_ORIGIN`与未配置提供方`PROVIDER_CONFIGURATION`为NO。预检不联网、不读取密钥内容，并保留DNS/TLS、服务账号与ACL、账号核实流程、备份恢复演练、真实模型连接与预算5项人工检查。W23公网部署仍未验收。
+- 便携开发包：`npm run pack`生成未签名目录，校验 **76个应用文件** 的SHA256清单（`signature:unsigned-development`），不含账号、密钥或运行数据；`verifyPackage`复核通过。包内独立`electron.exe`完整闭环 **退出码0、8/8阶段通过**。调用注意：宿主注入的`ELECTRON_RUN_AS_NODE=1`会让Electron以纯Node模式启动（报`bad option: --smoke`或`BrowserWindow`导出错误），需清除该变量并显式传`resources/app`路径；`scripts/launch.mjs`本来就会删除该变量，`npm start`/`npm run test:desktop`不受影响，这是调用环境差异而非应用缺陷。
+- UI截图目视检查：本轮生成20张截图（写入忽略的`output/screenshots`），目视核对浅色1440、深色1920、窄屏1024、个人/企业入口、合成写入确认对话、已完成任务卡、Skill重放确认、示范录制等9张；未见水平溢出、控件重叠、文字截断或不可读对比度，深浅主题与多分辨率布局正常。截图是合成状态，不等于真实业务页面验收。
+- 证据边界：本轮无代码改动，全部结论为本机合成/开发验证。离线评估`not_run`不等于模型通过；`ready:false`不等于上线就绪；未签名便携包不等于生产安装包。真实模型/业务的成功率、费用与人工纠正对照、当时尚未补齐的账号撤权端到端回归（已由同日后续节补齐）、W13—W18与W23父项仍按[唯一清单](PLAN.md)保留。所有改动仍在工作区未提交、未推送。
+
+- 同日 07:26 独立复核（用户再次要求全量测试，期间无代码改动）：`npm test`连续两次252/252无跳过，`npm run check`121个文件，`npm run model:eval -- --offline`14题/0次请求/0次网络，`npm run readiness`仍为`ready:false`（10/12项OK，占位域名与未提供方被拒），`npm run test:desktop`连续两次8/8阶段0失败，`npm run pack`再次生成76个文件且SHA256清单校验通过、包内闭环退出码0/8阶段。截图重新生成26张，任务卡目视正常，深色1920与窄屏1024截图与首次验证内容一致、未见布局回归。两次全量结果一致，未发现新问题；本条只记录复核证据，不新增验收结论。
+
+## 界面体验与本机演示测试账号（2026-11-13）
+
+- 需求：隐藏默认滚动条；为本机合成演示提供默认填写的测试登录账号，便于上线前测试。输入均为隔离合成数据，无真实模型、企业系统或付费调用。
+- 滚动条：`src/ui/styles.css`新增`*{scrollbar-width:none}`与`::-webkit-scrollbar{display:none}`，隐藏主窗口右侧及内部区域的默认滚动条，保留滚轮、触控板与键盘滚动；未使用`overflow:hidden`禁用滚动。
+- 测试账号：新增`src/ui/demo-account.mjs`（冻结常量＋纯函数）。仅当可信主进程`snapshot.product.deployment==='local_demo'`时，个人账号注册/登录表单默认填入固定合成账号，两个内建合成站点的凭据弹窗默认填入公开的`demo / demo123`；界面提供“重新填入测试账号”按钮与明确提示。`configured`/`unconfigured`等部署一律不预填；预填值来自前端合成常量，不从凭据库解密或回传真实密码；提交、退出或切换账号后立即清空，不缓存localStorage。
+- 桌面验证发现并修复的回归：`npm run test:desktop`最初连续3次在`desktop-smoke.mjs`“运行启动后取消”用例失败（实际`running`、期望`cancelled`）。根因是A阶段把取消标记提前后，运行在`cancel()`等待其他子系统期间自行结束并清空`active`，`cancel()`提前返回、没有写回终态。改为标记时记住在途token，`await`之后无论`active`是否已清空都对该token写入`cancelled`；修复后连续3次桌面闭环全部阶段通过，`controller.test.mjs`“启动即取消”回归仍全绿。
+- 验证：Node **v24.14.1** 下`npm test` **252/252通过、无跳过**（新增`test/demo-account.test.mjs` 2项：部署判断与合成值/冻结边界）；`npm run test:desktop`通过8个阶段（Electron加密与重开、备份恢复、UI与UI增强、交互浏览器、参数化Skill、通用浏览器UI、受控示范）；`npm run check`通过，检查121个文件。
+- 证据边界：本机合成演示便利功能，不构成真实账号体系、生产服务或上线验收；M6父项、W23及真实模型/业务对照仍按[唯一清单](PLAN.md)保留。桌面闭环属于开发验证记录。
+
+## M6 C 阶段：跨任务复用与生命周期（2026-11-13）
+
+本轮在B阶段已推送的基线上继续，只做本机合成数据与最小增量接线，不生成第二份并行清单；无真实模型、企业系统或付费调用。
+
+- 运行环境：Node **v24.14.1**（`D:/wsl/workspace/node/node.exe`，Windows）；默认PATH的v22.22.2不满足项目≥24要求。
+- 命令与结果：`npm test` **250/250通过、无跳过**（新增`test/memory-lifecycle.test.mjs` 8项）；`npm run check`通过，检查119个文件。
+- 现状核对：C阶段底座（本机检索、派生失效、级联遗忘、恢复后停用、Skill推荐、备份白名单与来源凭证）在A阶段已实现，本轮不重写，只补缺口与证据，不把"有代码"改写成"新完成"。
+- 修复1（摘要选择留存）：任务摘要由自动active改为proposed候选，7天未确认清理、需`memory.confirm`后才生效（确认后30天）、同一任务去重；修复`awaiting_review`任务在`agent.confirmResult`后只补经验候选、不补摘要的缺陷，两条完成路径统一调用`offerEpisode`。未确认候选不进入`memory.preview`与上下文外发。
+- 修复2（失效/冲突差异）：新增`memory.diff{id,expectedRevision}`只读接口，历史密文解密后按本人/记录/revision绑定校验，只返回标题、内容、核实/有效期、revision与状态等白名单字段；界面对"需重新核实/已被新版本替代"条目提供"查看差异"，记忆revision变化即清空。拒绝篡改密文、跨身份、过期CAS与伪造字段。
+- 新增回归（8项）：备份精确白名单与恢复后全部停用、逐条启用；历史清理保留Skill最小来源凭证；diff白名单/跨身份/篡改/CAS；污染过滤与检索5条/约1500字节预算不因差异接口放宽、过期事实不再召回；摘要候选确认链与到期清理；控制器闭环（开关关闭不生成、打开时在结果确认后生成proposed、核实后才可召回、不自动保存Skill、diff严格校验）。
+- 证据边界（C阶段完成时）：W27前两个子项与本机合成回归子项为本机验证；当时账号撤权的端到端回归尚未补齐（已由同日后续节完成），真实模型/业务的成功率、费用与人工纠正次数对照至今仍未开始。W24—W27父项按A→B→C整体验收保持未关闭；真实网站、真实模型与生产业务没有通过本轮验证；W13—W18、W23父项保持未关闭。详见[模块契约](CONTRACTS.md)与[唯一清单](PLAN.md)。
 
 ## 分支改名与推送前复核（2026-11-13）
 
@@ -22,7 +69,7 @@
 - 接线2（修正与复验可见）：新增`task.reflections`严格白名单记录（problemCode / evidenceIds / proposedCorrection / checkResult / nextAction），store按字段与枚举校验；`onReflection`在修正开始与独立Verifier复验结束后各写一次，任务卡展示问题、动作、复验结论与下一步。修正后的动作仍走原工具策略、授权复验与Verifier；不自动改Skill、权限或记忆。
 - 接线3（脱敏经验候选）：记忆设置新增独立`rememberLessons`（默认关闭），仅本人已完成且有复验记录的任务生成`kind:'lesson'`的`proposed`候选，7天未确认清理、需`memory.confirm`才生效；内容只含安全错误码与复验结论，同一运行ID不重复生成。控制器在`agent.confirmResult`后补生成，候选保存失败不影响任务完成。
 - 新增回归（`test/reflection-recovery.test.mjs`，12项）：分类边界与停止码；开启/关闭额外复核；一次修正后独立Verifier复验与预算占用；共享预算拒绝第二次修正；无变化调用停止；越权/费用/超时/未知结果不重试；Skill重放与模型复核共用额度、登录错误交人工；修正记录白名单与继续保留；候选开关、默认待确认与到期清理；控制器闭环验证开关关闭/打开两种情况下候选生成、记录脱敏及不自动保存Skill。
-- 证据边界：W26两个子项为本机合成验证；W24/W25/W26父项仍不关闭，W27（C阶段）与真实模型/业务的成功率、费用、人工纠正次数对照未开始。真实网站、真实模型和生产业务没有通过本轮验证；W13—W18、W23父项保持未关闭。详细边界见[模块契约](CONTRACTS.md)与[唯一清单](PLAN.md)。
+- 证据边界（B阶段完成时）：W26两个子项为本机合成验证；W24/W25/W26父项仍不关闭，当时W27（C阶段）尚未开始；真实模型/业务的成功率、费用、人工纠正次数对照至今仍未开始。真实网站、真实模型和生产业务没有通过本轮验证；W13—W18、W23父项保持未关闭。C阶段可本机验证部分见本轮最新一节。详细边界见[模块契约](CONTRACTS.md)与[唯一清单](PLAN.md)。
 
 ## M6 A 阶段回归收敛（2026-11-13）
 
@@ -34,7 +81,7 @@
 - 修复2（启动取消竞态）：`cancel()`原先在`await demonstration.cancel`/`agentRuntime.cancel`之后才设置启动标记，采购运行在等待期间因缺少合成凭据写成`failed`。12次循环复现中7次复现；现在任何await之前先标记`startPending`与在途`active`，同脚本12次全部为`cancelled`且未创建浏览器。
 - 修复3（记忆输入过滤）：`memoryText`缺少URL内嵌凭据规则，`https://user:password@example.test`未被拒绝。SECRET规则补充`scheme://user:pass@`形态；原有密码、Bearer、JWT、HTML标签与提示注入检查不变，新增`memory-store`严格输入用例通过。
 - 回归语义更新：开放网页任务现在为`awaiting_review`→`agent.confirmResult`明确核对→`completed`，之后才可保存Skill。`controller.test.mjs`新增"未核对不能保存Skill"断言；`demonstration-controller.test.mjs`的HTTPS只读Skill重放仍为0次模型调用、无需模型配置或页面外发同意，仅增加结果确认步骤。两处是M6验证语义的适配，不是放宽原有权限或来源校验。
-- 证据边界（A阶段完成时）：W24/W25子项为本机合成验证；当时`src/agent/recovery-policy.mjs`的`classifyRecovery`仍是独立分类模块、未接入执行链，W26/W27及真实模型/业务的成功率、费用与人工纠正对照未验收。该状态已由同日B阶段接线取代（见上文），W27与真实效果对照仍未开始。W13—W18、W23父项保持未关闭，原因见[PLAN](PLAN.md)第9节。本轮没有把准备就绪当作真实环境通过。
+- 证据边界（A阶段完成时）：W24/W25子项为本机合成验证；当时`src/agent/recovery-policy.mjs`的`classifyRecovery`仍是独立分类模块、未接入执行链，W26/W27及真实模型/业务的成功率、费用与人工纠正对照未验收。该状态已由同日B阶段接线取代（见上文），W27的本机可验证部分再由C阶段节取代；真实效果对照仍未开始。W13—W18、W23父项保持未关闭，原因见[PLAN](PLAN.md)第9节。本轮没有把准备就绪当作真实环境通过。
 
 ## 清单核对与推广运维准备（2026-11-07）
 

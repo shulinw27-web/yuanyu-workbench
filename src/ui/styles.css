@@ -24,3 +24,7 @@
 /* Personal memory and explicit task budgets. */
 #view-memory .settings-section{max-width:900px}#memory-form>.text-input{width:100%;min-width:0}.memory-card{padding:18px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.memory-card>p{white-space:pre-wrap;font-size:12px;line-height:1.8;margin:10px 0}.memory-plan{margin:18px 0;padding:16px;border:1px solid var(--line);border-radius:8px;overflow-wrap:anywhere}.memory-budget{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px}.memory-budget input{max-width:76px}.memory-plan>.text-button{display:block;margin-top:10px}.memory-plan .model-consent{align-items:flex-start}.status.awaiting_review{color:var(--muted)}
 .reflection-card{margin:14px 0;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);overflow-wrap:anywhere}.reflection-card>strong{font-size:12px;font-weight:600}.reflection-card>p{margin:8px 0 0;font-size:11px;line-height:1.8}
+
+/* 隐藏系统默认滚动条，保留滚轮、触控板与键盘滚动（Electron/Chromium） */
+*{scrollbar-width:none;-ms-overflow-style:none}
+::-webkit-scrollbar{display:none;width:0;height:0}

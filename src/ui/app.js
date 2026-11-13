@@ -1,4 +1,5 @@
 import {createMemoryUI} from './memory-ui.js';
+import {demoAccountFor,demoSystemCredentialFor} from './demo-account.mjs';
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const SYSTEMS = [
@@ -728,6 +729,15 @@ function amount(value) {
 
 function showDeveloperContact() { $('#developer-contact-dialog').showModal(); }
 
+function prefillDemoAccount(force = false) {
+  const account = demoAccountFor(product()?.deployment);
+  if (!account) return;
+  for (const [selector, value] of [['#auth-email', account.email], ['#auth-name', account.name], ['#auth-password', account.password]]) {
+    const node = $(selector);
+    if (node && (force || !node.value)) node.value = value;
+  }
+}
+
 function renderProduct() {
   const current = product();
   const locked = productLocked();
@@ -739,6 +749,8 @@ function renderProduct() {
   $('.app-shell').inert = locked;
   $('.environment-pill').textContent = current ? (current.deployment === 'local_demo' ? '本机合成账户' : current.mode === 'enterprise' ? '企业版' : '个人版') : 'Mock 身份';
   if (!current) return;
+  const demoAccount = demoAccountFor(current.deployment);
+  for (const selector of ['#demo-account-note', '#demo-account-fill']) $(selector).hidden = !demoAccount;
   const local = current.deployment === 'local_demo';
   const account = current.account || {};
   const name = account.displayName || account.email || '个人账号';
@@ -1189,6 +1201,8 @@ function openCredentialDialog(system) {
   if (isLocked()) return;
   $('#credential-form').reset();
   $('#credential-system').value = system.id;
+  const demoCredential = demoSystemCredentialFor(product()?.deployment, system.id);
+  if (demoCredential) { $('#credential-username').value = demoCredential.username; $('#credential-password').value = demoCredential.password; }
   $('#credential-dialog-title').textContent = credentialFor(system.id) ? '更新系统账号' : '连接系统账号';
   $('#credential-system-caption').textContent = `${system.label} · 仅用于本机合成站点演示`;
   $('#credential-error').hidden = true;
@@ -1278,13 +1292,14 @@ async function switchIdentity(userId) {
   }
 }
 
-$('#entry-personal').addEventListener('click', () => { state.entryPanel = 'auth'; renderProduct(); $('#auth-email').focus(); });
+$('#entry-personal').addEventListener('click', () => { state.entryPanel = 'auth'; renderProduct(); prefillDemoAccount(); $('#auth-email').focus(); });
 $('#entry-enterprise').addEventListener('click', () => { state.entryPanel = 'enterprise'; renderProduct(); });
 $$('[data-entry-back]').forEach((node) => node.addEventListener('click', () => { state.entryPanel = 'choices'; $('#auth-password').value = ''; renderProduct(); }));
-$('#entry-back-login').addEventListener('click', () => { state.entryPanel = 'auth'; state.authTab = 'login'; renderProduct(); });
+$('#entry-back-login').addEventListener('click', () => { state.entryPanel = 'auth'; state.authTab = 'login'; renderProduct(); prefillDemoAccount(); });
 $$('[data-auth-tab]').forEach((node) => node.addEventListener('click', () => {
-  state.authTab = node.dataset.authTab; $('#auth-password').value = ''; $('#auth-error').hidden = true; renderProduct();
+  state.authTab = node.dataset.authTab; $('#auth-password').value = ''; $('#auth-error').hidden = true; renderProduct(); prefillDemoAccount();
 }));
+$('#demo-account-fill').addEventListener('click', () => { prefillDemoAccount(true); $('#auth-email').focus(); });
 $$('[data-contact-developer]').forEach((node) => node.addEventListener('click', showDeveloperContact));
 $$('[data-copy-developer]').forEach((node) => node.addEventListener('click', () => mutation('developer.contact.copy', {}, '开发者微信号已复制。')));
 $('.entry-brand').addEventListener('click', (event) => { event.preventDefault(); state.entryPanel = 'choices'; renderProduct(); });

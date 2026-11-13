@@ -77,7 +77,21 @@ export function createMemoryStore({dataDir,identity,cryptoAdapter,now=Date.now}=
       if(input.rememberEpisodes!==undefined)state.settings.rememberEpisodes=input.rememberEpisodes;
       if(input.rememberLessons!==undefined)state.settings.rememberLessons=input.rememberLessons;
       await commit();return {revision:state.revision,settings:settings(state)};}),
-    retrieve:input=>operation(async(state,commit)=>{memoryFields(input,['query','siteBindings','includeEpisodes','ids']);if(!available()){assert(!input.ids?.length,'MEMORY_CRYPTO_UNAVAILABLE');return {revision:state.revision,entries:[],estimatedTokens:0};}const values=await prune(state,commit,await entries(state));return {revision:state.revision,...retrieveMemories({entries:visible(values,state),query:input.query,siteBindings:input.siteBindings??[],includeEpisodes:input.includeEpisodes===true&&state.settings.rememberEpisodes,ids:input.ids,now:timestamp()})};})
+    retrieve:input=>operation(async(state,commit)=>{memoryFields(input,['query','siteBindings','includeEpisodes','ids']);if(!available()){assert(!input.ids?.length,'MEMORY_CRYPTO_UNAVAILABLE');return {revision:state.revision,entries:[],estimatedTokens:0};}const values=await prune(state,commit,await entries(state));return {revision:state.revision,...retrieveMemories({entries:visible(values,state),query:input.query,siteBindings:input.siteBindings??[],includeEpisodes:input.includeEpisodes===true&&state.settings.rememberEpisodes,ids:input.ids,now:timestamp()})};}),
+    diff:input=>operation(async state=>{
+      requireCrypto();memoryFields(input,['id','expectedRevision']);
+      const record=find(state,input.id);if(input.expectedRevision!==undefined)cas(record,input.expectedRevision);
+      const current=await decode(record);
+      const preview=value=>({title:memoryText(value.title,80),content:memoryText(value.content,1000),verifiedAt:value.verifiedAt,expiresAt:value.expiresAt});
+      const history=[];
+      for(const version of [...record.history].slice(-2).reverse()){
+        let value;try{value=JSON.parse(await cryptoAdapter.decrypt(version.cipher));}catch{throw memoryError('MEMORY_DECRYPT_FAILED');}
+        for(const [key,expected]of Object.entries(binding(record.id,version.revision)))assert(value[key]===expected,'MEMORY_BINDING_MISMATCH');
+        validateEntry(value);
+        history.push({revision:version.revision,status:value.status,updatedAt:value.updatedAt,...preview(value)});
+      }
+      return {id:record.id,revision:record.revision,kind:current.kind,status:effectiveMemoryStatus(current,timestamp(),state.restoredPaused.includes(record.id)),current:preview(current),history};
+    })
   });
 }
 

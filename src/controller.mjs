@@ -23,7 +23,7 @@ const identities = {
   outsider:{companyId:'mock-other',userId:'outsider',displayName:'其他公司 · 测试成员',provider:'mock'}
 };
 const messages = {
-  MEMORY_INPUT_INVALID:'记忆格式或范围无效，请检查内容，不要填写凭据。',MEMORY_CONSENT_REQUIRED:'请逐条选择并确认本次发送给模型的记忆。',MEMORY_SELECTION_CHANGED:'所选记忆已变化、过期或不适用于当前站点，请重新选择。',MEMORY_CRYPTO_UNAVAILABLE:'系统加密不可用，记忆未保存。',MEMORY_VERSION_CONFLICT:'记忆已更新，请刷新后重新操作。',
+  MEMORY_INPUT_INVALID:'记忆格式或范围无效，请检查内容，不要填写凭据。',MEMORY_CONSENT_REQUIRED:'请逐条选择并确认本次发送给模型的记忆。',MEMORY_SELECTION_CHANGED:'所选记忆已变化、过期或不适用于当前站点，请重新选择。',MEMORY_CRYPTO_UNAVAILABLE:'系统加密不可用，记忆未保存。',MEMORY_VERSION_CONFLICT:'记忆已更新，请刷新后重新操作。',MEMORY_NOT_FOUND:'没有找到这条记忆，请刷新后重试。',MEMORY_DECRYPT_FAILED:'本机记忆无法解密，未展示历史版本。',MEMORY_BINDING_MISMATCH:'记忆与本人身份不匹配，已拒绝展示。',
   AGENT_BUDGET_EXHAUSTED:'本任务预算已用完，请核对结果后创建新任务。',AGENT_BUDGET_LEGACY:'旧任务没有可核对的累计预算，请创建新任务。',AGENT_REVIEW_REQUIRED:'结果需要你核对后才能保存为工作流。',AGENT_CORRECTION_NO_CHANGE:'修正后没有产生可核对的变化，任务已停止；请检查当前页面。',
   DEMONSTRATION_INPUT_INVALID:'示范参数无效，请填写目标并选择一至三个授权站点。',DEMONSTRATION_ACTIVE:'请先完成或取消当前示范。',DEMONSTRATION_NOT_ACTIVE:'这次示范已结束或中断，请从新任务重新开始。',DEMONSTRATION_RESUME_REQUIRED:'请通过示范面板继续；重启后请直接重新示范，原记录保留。',DEMONSTRATION_NOT_PAUSED:'示范当前不在登录接管状态，请重新观察页面。',DEMONSTRATION_CONFIRMATION_REQUIRED:'请先核对当前页面结果，再明确确认完成示范。',DEMONSTRATION_RESULT_UNVERIFIED:'请至少执行一次可记录操作并读取当前结果后，再确认完成。',DEMONSTRATION_RESULT_CHANGED:'当前页面结果已变化，请查看新页面内容并重新核对后完成。',DEMONSTRATION_PAGE_INVALID:'当前页面结构无法安全记录，请重新观察或取消示范。',DEMONSTRATION_TIMEOUT:'示范操作超时，已停止当前记录；请检查站点后重新开始。',STALE_REFERENCE:'页面或控件已变化，请重新观察后再操作。',
   WRITE_INPUT_INVALID:'请选择合成月份并填写不含凭据的核对备注（最多300字）。',WRITE_CONFIRMATION_INVALID:'预览已过期或确认内容不匹配，请重新预览。',WRITE_CONTEXT_CHANGED:'身份或来源已变化，写入已停止。',WRITE_RECEIPT_RECONCILE_REQUIRED:'上次回执尚未确认，请先核对回执，不要重复提交。',CONTACT_UNAVAILABLE:'开发者联系方式尚未配置。',CLIPBOARD_UNAVAILABLE:'无法自动复制，请选中微信号手动复制。',
@@ -75,9 +75,20 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     const selection=await profileSelection(profiles);return createBrowserModelRequester({...input,...selection});
   }
   async function profileSelection(store){const list=await store.list();if(list.activeId)return {profiles:store};if(list.revision>1)throw new Error('MODEL_NOT_CONFIGURED');return {};}
-  let offerLesson=async()=>{};
+  let offerLesson=async()=>{},offerEpisode=async()=>{};
   function initializeAgent(){
     const owner=identity,memories=memoryStore;agentStore=createAgentStore({dataDir,identity});
+    // Best-effort, user-confirmed candidates: never block completion or auto-enable long-term memory.
+    offerEpisode=async task=>{
+      try{
+        if(identity!==owner||switching||memories!==memoryStore||!await authorized(owner))return;
+        if(!task||task.status!=='completed')return;
+        const view=await memories.snapshot();if(!view.available||!view.settings?.rememberEpisodes)return;
+        if(view.entries.some(entry=>entry.kind==='episode'&&entry.source?.id===task.id))return;
+        await memories.save({kind:'episode',title:'本次任务摘要（待确认）',content:`任务已完成；执行模式：${task.mode}；步骤数：${task.steps?.length||0}。业务数据需重新查询。`,siteBindings:task.siteBindings,source:{type:'verified_run',id:task.id},confirmed:false});
+        await notify();
+      }catch{return;}
+    };
     // Best-effort lesson candidate: never blocks completion, never auto-enables or edits a Skill.
     offerLesson=async task=>{
       try{
@@ -103,10 +114,7 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
       },
       onTaskMemory:async info=>{
         if(identity!==owner||switching||memories!==memoryStore||!await authorized(owner))return;
-        const task=info.task;if(!task||task.status!=='completed')return;
-        const view=await memories.snapshot();
-        if(view.settings?.rememberEpisodes)await memories.save({kind:'episode',title:'已完成任务摘要',content:`任务已完成；执行模式：${task.mode}；步骤数：${task.steps?.length||0}。业务数据需重新查询。`,siteBindings:task.siteBindings,source:{type:'verified_run',id:task.id},confirmed:true});
-        await offerLesson(task);
+        await offerEpisode(info.task);await offerLesson(info.task);
       }
     });
     demonstration=createDemonstration({store:agentStore,getSites:agentSites,getBrowser:()=>getBrowser(owner),isCurrent:()=>identity===owner&&!switching,authorize:()=>authorized(owner),onUpdate:notify,safeError});
@@ -240,14 +248,15 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     const cancelledPlanning=!!planning;planning?.abort();
     // Mark startup and in-flight runs before awaiting other subsystems, so a late failure is never stored as 'failed'.
     const startup=startPending;if(startup)startup.cancelled=true;
-    const pendingRun=active;if(pendingRun)pendingRun.cancelled=true;
+    const token=active;if(token)token.cancelled=true;
     const cancelledDemo=await demonstration.cancel({});
     const cancelledAgent=await agentRuntime.cancel();
     if(startup)await startup.settled;
-    if(!active)return {cancelled:!!startup || cancelledPlanning || cancelledAgent.cancelled || cancelledDemo.cancelled};
-    const token=active;token.cancelled=true;
+    if(!token)return {cancelled:!!startup || cancelledPlanning || cancelledAgent.cancelled || cancelledDemo.cancelled};
+    // The run may already have stopped and cleared `active` while we awaited. Persist its terminal state anyway,
+    // otherwise a cancellation that wins the race leaves the run stuck at `running`.
     await token.target.updateRun(token.id,{status:'cancelled',error:{code:'CANCELLED',message:messages.CANCELLED}}).catch(()=>{});
-    await token.driver.close();await token.promise;await notify();return {cancelled:true};
+    await token.driver.close();await token.promise;if(active===token)active=null;await notify();return {cancelled:true};
   }
   async function invoke(action,payload={}) {
     if(!payload || typeof payload!=='object' || Array.isArray(payload))throw new Error('INPUT_INVALID');
@@ -272,6 +281,12 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
       case 'memory.confirm':return changeSites(()=>memoryStore.confirm(payload));
       case 'memory.settings':return changeSites(()=>memoryStore.updateSettings(payload));
       case 'memory.forget':await cancel();return changeSites(()=>memoryStore.forget(payload));
+      case 'memory.diff':{
+        requireIdle();const owner=identity,memories=memoryStore;
+        if(Object.keys(payload).some(key=>!['id','expectedRevision'].includes(key))||typeof payload.id!=='string'||payload.id.length>100||payload.expectedRevision!==undefined&&!Number.isInteger(payload.expectedRevision))throw new Error('MEMORY_INPUT_INVALID');
+        const result=await memories.diff({id:payload.id,expectedRevision:payload.expectedRevision});
+        if(owner!==identity||memories!==memoryStore||!await authorized(owner))throw new Error('CANCELLED');return result;
+      }
       case 'memory.preview':{
         requireIdle();const owner=identity,memories=memoryStore,sites=await agentSites();
         if(typeof payload.query!=='string'||payload.query.length>2000||!Array.isArray(payload.siteIds)||payload.siteIds.length>3)throw new Error('MEMORY_INPUT_INVALID');
@@ -310,7 +325,7 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
         }finally{if(planning===request)planning=null;await notify();}
       }
       case 'agent.start':return launchAgent(()=>agentRuntime.start({goal:payload.goal,siteIds:payload.siteIds,mode:payload.mode,consent:payload.consent,budgetOptions:payload.budgetOptions,enableReflection:payload.enableReflection}));
-      case 'agent.confirmResult':{requireIdle();const result=await agentRuntime.confirmResult(payload);await offerLesson((await agentStore.listTasks()).find(task=>task.id===payload.id));return result;}
+      case 'agent.confirmResult':{requireIdle();const result=await agentRuntime.confirmResult(payload);const task=(await agentStore.listTasks()).find(task=>task.id===payload.id);await offerEpisode(task);await offerLesson(task);return result;}
       case 'agent.history.clear':requireIdle();result=await agentRuntime.cleanupHistory(payload);break;
       case 'agent.resume':return launchAgent(async()=>{const task=(await agentStore.listTasks()).find(task=>task.id===payload.id);if(task?.execution==='demonstration')throw new Error('DEMONSTRATION_RESUME_REQUIRED');return agentRuntime.resume({id:payload.id,consent:payload.consent});});
       case 'agent.cancel':{const task=(await agentStore.listTasks()).find(task=>task.id===payload.id);return task?.execution==='demonstration'?demonstration.cancel({id:payload.id}):agentRuntime.cancel(payload.id);}
