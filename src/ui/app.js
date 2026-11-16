@@ -1,4 +1,5 @@
 import {createMemoryUI} from './memory-ui.js';
+import {createProjectUI} from './project-ui.js';
 import {demoSystemCredentialFor} from './demo-account.mjs';
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -6,7 +7,7 @@ const SYSTEMS = [
   { id: 'procurement', label: 'Mock 采购订单', description: '采购订单 · 已审核记录', symbol: '▤' },
   { id: 'warehouse', label: 'Mock 仓储入库', description: '仓储入库 · 到货记录', symbol: '▥' },
 ];
-const VIEW_NAMES = { workspace: '新任务', history: '任务历史', workflows: '工作流', accounts: '系统与账号', settings: '设置', memory:'个人记忆' };
+const VIEW_NAMES = { workspace: '新任务', history: '任务历史', workflows: '工作流', projects: '项目', accounts: '系统与账号', settings: '设置', memory:'个人记忆' };
 const STATUS = { running: '执行中', awaiting_user: '等待你操作', awaiting_review:'待核对结果', interrupted: '已中断', completed: '已完成', failed: '未完成', cancelled: '已取消', pending: '等待执行', queued: '等待执行' };
 const state = {
   snapshot: { identity: null, credentials: [], workflows: [], runs: [], shared: [] },
@@ -19,6 +20,7 @@ let toastTimer;
 let confirmCallback;
 let unsubscribe;
 const memoryUI=createMemoryUI({state,element,append,button,invoke,mutation,refresh,render,confirmAction,isLocked,planSkill:planAgentSkill});
+const projectUI=createProjectUI({state,element,append,button,invoke,mutation,refresh,render,confirmAction,isLocked,toast,pickDirectory:()=>window.workbench?.pickDirectory?.()});
 
 function element(tag, className = '', text = '') {
   const node = document.createElement(tag);
@@ -967,6 +969,7 @@ function render() {
   $('#demonstration-open').disabled = !state.connected || isLocked();
   $('#new-workflow').disabled = isLocked();
   memoryUI.render();
+  projectUI.render();
   renderQuickWorkflows();
   renderPlan();
   renderRuns();

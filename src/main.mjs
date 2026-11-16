@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, safeStorage, shell,nativeTheme,clipboard } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage, shell,nativeTheme,clipboard,dialog } from 'electron';
 import { mkdirSync,mkdtempSync } from 'node:fs';
 import { homedir,tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -46,6 +46,12 @@ app.whenReady().then(async()=>{
     ipcMain.handle('workbench:invoke',async(event,action,payload)=>{
       if(event.sender!==win.webContents || event.senderFrame!==win.webContents.mainFrame || event.senderFrame.url!==uiUrl)return {ok:false,error:{code:'IPC_DENIED',message:'请求来源不受信任。'}};
       try{return {ok:true,data:await controller.invoke(action,payload)};}catch(error){return {ok:false,error:safeError(error)};}
+    });
+    ipcMain.handle('workbench:pickDirectory',async(event)=>{
+      if(event.sender!==win.webContents || event.senderFrame!==win.webContents.mainFrame || event.senderFrame.url!==uiUrl)return {ok:false,error:{code:'IPC_DENIED',message:'请求来源不受信任。'}};
+      const picked=await dialog.showOpenDialog(win,{title:'选择项目文件夹',properties:['openDirectory','createDirectory']});
+      if(picked.canceled||!picked.filePaths.length)return {ok:true,data:{cancelled:true}};
+      return {ok:true,data:{cancelled:false,path:picked.filePaths[0]}};
     });
     win.webContents.setWindowOpenHandler(()=>({action:'deny'}));
     win.webContents.on('will-navigate',(event,url)=>{if(url!==uiUrl)event.preventDefault();});

@@ -145,3 +145,9 @@ UI负责界面文件 src/ui/*；不直接访问Node和文件系统。凭据表�
 - 摘要选择留存：`rememberEpisodes`打开后，控制器只为本人的completed任务生成一条`kind:'episode'`的`proposed`候选（7天未确认清理、同一任务去重），必须`memory.confirm`后才active（确认后30天）；内容只含执行模式与步骤数。`offerEpisode`在`onTaskMemory`与`agent.confirmResult`两条路径调用，修复待核对任务确认结果后不生成摘要的缺陷。未确认候选不进入`memory.preview`或上下文外发。
 - 来源与恢复：`agent.history.clear`为被Skill引用的已结束任务保留最小不可执行来源凭证（taskId、模板指纹、完成时间），清理后Skill仍通过`validateState`来源校验；备份精确白名单只导出`memory/<company>/<user>/state.json`，恢复由`pauseRestoredMemory`把全部条目置paused，不解密、不自动启用，需逐条确认；`forget`级联清除全部历史版本、候选与派生载荷并保留最小删除标记。
 - 证据边界：`memory.preview.recommendedSkills`只按当前站点绑定与名称做本机匹配，不读取记忆正文、不自动运行或修改Skill；账号撤权端到端回归已由`test/memory-consent-revocation.test.mjs`补齐（撤权后整体隐藏、IPC拒绝、跨账号隔离、选定记忆外发逐次同意、请求间记忆修订使上下文失效）；真实模型/业务的成功率与费用/人工纠正次数对照仍未验收，不自动扩大反思范围。W24—W27父项按A→B→C整体验收保持未关闭。
+
+## M8 项目化工作（2026-11-16）
+
+- `snapshot.projects`返回`{revision,projects,currentId}`；未登录或账号撤权时整体隐藏（与`memory`同款门控）。项目是按身份隔离的**目录登记记录**，存于仓库外`projects/<company>/<user>/state.json`，单写者队列、原子替换、PID映像锁与`projects`根锁。
+- `project.createEmpty{name,root}`在全部校验通过后才创建目录（失败无目录副作用）：root必须绝对、仓库外、链路无符号链接；目标不存在或为空目录才创建，非空拒绝。`project.importFolder{root,name?}`只登记已存在的真实文件夹（默认名取文件夹名），不移动、不复制、不修改其中任何文件；同一真实路径（按realpath规范化，含大小写/斜杠差异）拒绝重复登记。`project.rename`、`project.setCurrent{id|null}`、`project.remove`、`project.openFolder`均以`expectedRevision`裁决，`openFolder`调用本机打开器并顺带更新最近打开与当前项目。
+- 安全边界：删除项目只移除登记记录，永不删除用户文件；路径含符号链接、落点在代码仓库内或状态文件被篡改一律拒绝（`PROJECT_UNSAFE_PATH` / `PROJECT_STORE_INVALID`）；界面渲染项目名与路径为纯文本，不执行项目目录内容。`workbench:pickDirectory`为系统目录选择IPC，校验请求来源帧，仅返回所选路径或取消，不读取目录内容。

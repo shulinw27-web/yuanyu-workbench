@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile, readdir, mkdir, mkdtemp,realpath } from 'node:fs/promises';
+import { readFile, readdir, mkdir, mkdtemp,realpath,rm } from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -113,6 +113,18 @@ export async function runDesktopSmoke({BrowserWindow,cryptoAdapter,systems,dataD
     await until(`!document.querySelector('[data-view="company"]') && !document.querySelector('#view-company') && !document.querySelector('#product-entry') && !document.querySelector('#model-source-settings') && !document.querySelector('#product-account-settings')`);
     await uiController.invoke('workflow.publish',{id:(await uiController.snapshot()).workflows.find(w=>w.name==='界面回归月报').id});
     assert.ok((await uiController.snapshot()).shared.some(p=>p.template.name==='界面回归月报'),'受控IPC层Mock发布仍可用');
+    // 项目：界面创建空项目（真实建目录并设为当前）→ 删除记录只移除登记、不删用户文件夹。
+    const projectRoot=join(tmpdir(),`yuanyu-ui-project-${Date.now()}`);
+    await runUi(`document.querySelector('[data-view="projects"]').click()`);
+    await runUi(`document.querySelector('#project-create-name').value='界面回归项目';document.querySelector('#project-create-root').value=${JSON.stringify(projectRoot)};document.querySelector('#project-create-form').requestSubmit();`);
+    await until(`[...document.querySelectorAll('#project-list article')].some(c=>c.textContent.includes('界面回归项目') && c.textContent.includes('当前项目') && c.textContent.includes('新建空目录'))`);
+    assert.ok((await uiController.snapshot()).projects.projects.some(p=>p.name==='界面回归项目'&&p.origin==='empty'));
+    await runUi(`const card=[...document.querySelectorAll('#project-list article')].find(c=>c.textContent.includes('界面回归项目'));[...card.querySelectorAll('button')].find(b=>b.textContent==='删除记录').click();`);
+    await runUi(`document.querySelector('#confirm-action').click();`);
+    await until(`document.querySelectorAll('#project-list article').length===0`);
+    assert.equal((await uiController.snapshot()).projects.projects.length,0);
+    await readdir(projectRoot);
+    await rm(projectRoot,{recursive:true,force:true});
     await runUi(`const picker=document.querySelector('#identity-select');picker.value='bob';picker.dispatchEvent(new Event('change',{bubbles:true}));`);
     await until(`document.querySelector('#identity-avatar').textContent==='陈' && !document.querySelector('#identity-select').disabled`);
     assert.ok((await uiController.snapshot()).workflows.every(w=>w.name!=='界面回归月报'),'跨身份工作流必须隔离');
@@ -165,6 +177,6 @@ export async function runDesktopSmoke({BrowserWindow,cryptoAdapter,systems,dataD
     ui.setSize(1366,768);await new Promise(r=>setTimeout(r,100));assert.ok(await ui.webContents.executeJavaScript(`document.documentElement.scrollWidth<=innerWidth+2`));
     await writeFile(join(root,'output','screenshots','workbench-1366-light.png'),(await ui.webContents.capturePage()).toPNG());
     console.log('PASS UI：真实页面计划确认→执行→文件→保存→IPC发布校验→身份隔离→首页换月复用；隔离preload、1440和1024宽度无水平溢出；截图已保存。');
-    console.log('PASS UI增强：编辑v2→停用v3→启用v4→恢复v5、撤旧发布、站点注册、模型未配置禁用、深浅主题及1920/1366布局；登录注册与公司流程入口已按个人开源版移除。');
+    console.log('PASS UI增强：编辑v2→停用v3→启用v4→恢复v5、撤旧发布、站点注册、模型未配置禁用、深浅主题及1920/1366布局；登录注册与公司流程入口已按个人开源版移除；项目创建空目录与删除记录不删文件。');
   } finally {ipcMain.removeHandler('workbench:invoke');await uiController.close();ui.destroy();}
 }

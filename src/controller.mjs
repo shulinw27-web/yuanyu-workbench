@@ -7,6 +7,7 @@ import {createSiteRegistry} from './sites/registry.mjs';
 import {createAgentStore} from './agent/store.mjs';
 import {createAgentRuntime} from './agent/runtime.mjs';
 import {createMemoryStore} from './memory/store.mjs';
+import {createProjectStore} from './project/store.mjs';
 import {createDemonstration} from './agent/demonstration.mjs';
 import {createBrowserModelRequester,probeModelProfile} from './model/gateway.mjs';
 import {createModelProfiles,PROVIDERS} from './model/profiles.mjs';
@@ -40,7 +41,8 @@ const messages = {
   SITE_VERSION_CONFLICT:'站点配置已变化，请刷新后再修改。',
   AGENT_SKILL_VERSION_CHANGED:'浏览器工作流已修订，请重新查看参数并创建任务。',AGENT_PARAMETER_INVALID:'工作流参数无效，请使用已声明的查询参数，不要填写凭据。',
   AGENT_MOCK_SCOPE:'合成演示仅支持读取交互式本机站点的2026-09或2026-10记录；请在任务中注明“合成”。它不代表真实模型理解能力。',AGENT_SITE_SCOPE:'请选择当前模式允许的站点；合成演示仅使用本机内建站点。',AGENT_CONFIG_INVALID:'浏览器任务需要1至3个授权站点和有效执行模式。',AGENT_TASK_ACTIVE:'请先继续或取消当前等待中的浏览器任务。',AGENT_BINDINGS_CHANGED:'此任务或工作流绑定的站点来源或版本已变化，请重新确认并建立流程。',AGENT_TASK_NOT_FOUND:'当前身份没有此浏览器任务或工作流。',AGENT_SKILL_NOT_FOUND:'原工作流已删除，无法继续该次运行。',AGENT_TASK_NOT_RESUMABLE:'此任务不能继续，请新建任务。',AGENT_TIMEOUT:'本轮操作超时，未标记为完成。请检查页面后手动继续。',AGENT_RESULT_UNVERIFIED:'未读取到可以核对的页面结果，任务没有标为完成。',AGENT_CONTEXT_CHANGED:'当前身份或站点配置已变化，任务已停止。',AGENT_SENSITIVE_DATA:'任务或模板疑似包含凭据或原始网页，未保存；请通过独立登录窗口操作。',PAGE_STRUCTURE_CHANGED:'页面结构已变化，无法唯一定位原有步骤，请人工检查。',PAGE_CONTENT_CONSENT_REQUIRED:'请分别确认发送本条任务文本和所选页面内容。',MODEL_PAGE_SCOPE_REQUIRED:'本机模型配置需要明确设置dataScope为selected_pages后，才能启用页面理解。',MODEL_CONFIG_CHANGED:'模型配置已变化，本轮已停止；请重新确认调用范围。',
-  CANCELLED:'任务已取消，未继续生成结果。',ARTIFACT_NOT_FOUND:'文件不存在或不属于当前用户已完成的运行。'
+  CANCELLED:'任务已取消，未继续生成结果。',ARTIFACT_NOT_FOUND:'文件不存在或不属于当前用户已完成的运行。',
+  PROJECT_INPUT_INVALID:'项目名称或路径无效，请检查后重试。',PROJECT_UNSAFE_PATH:'项目目录必须是仓库外的本地目录，且路径不能包含符号链接。',PROJECT_DIRECTORY_NOT_EMPTY:'目标位置已存在非空目录；请换一个空位置，或改用“从本地文件夹导入”。',PROJECT_DIRECTORY_MISSING:'所选文件夹不存在或不是目录，请重新选择。',PROJECT_DUPLICATE:'该文件夹已登记为项目，不能重复导入。',PROJECT_NOT_FOUND:'没有找到这个项目，请刷新后重试。',PROJECT_VERSION_CONFLICT:'项目列表已更新，请刷新后重试。',PROJECT_LOCKED:'项目存储正由其他进程使用。',PROJECT_STORE_INVALID:'项目数据无法验证，请保留原文件后检查。',PROJECT_LIMIT:'项目数量已达本机存储上限。',PROJECT_IDENTITY_INVALID:'项目身份无效。'
 };
 export function safeError(error) {
   const raw = typeof error?.code === 'string' ? error.code : error?.message;
@@ -50,7 +52,7 @@ export function safeError(error) {
 
 export async function createController({dataDir,cryptoAdapter,systems,BrowserWindow,builtinSites=[],onUpdate=()=>{},browserShow=true,openPath=async()=>{},planningGateway=proposeModelPlan,agentRequesterFactory,interactiveFactory,productClient,modelProbe=probeModelProfile,copyText=async()=>{throw new Error('CLIPBOARD_UNAVAILABLE');}}) {
   let identity=identities.alice, workspace, active=null, starting=false, startPending=null, switching=false, pending=null,planning=null;
-  let siteRegistry,customSites=[],currentSystems=systems,interactive=null,agentStore,agentRuntime,demonstration,configurationPending=null,profiles,demoWrite,memoryStore,modelPreference={source:productClient?'sponsored':'byok',modelId:null};
+  let siteRegistry,customSites=[],currentSystems=systems,interactive=null,agentStore,agentRuntime,demonstration,configurationPending=null,profiles,demoWrite,memoryStore,projectStore,modelPreference={source:productClient?'sponsored':'byok',modelId:null};
   const trustedSites=builtinSites.map(site=>({...site,builtin:true,revision:1}));
   const agentSites=async()=>[...trustedSites,...await siteRegistry.list()];
   const modelFile=()=>join(dataDir,'models',identity.companyId,identity.userId,'model.local.json');
@@ -61,6 +63,7 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     modelPreference={source:productClient?'sponsored':'byok',modelId:null};
     try{const value=JSON.parse(await readFile(preferencesFile(),'utf8'));if(!['sponsored','byok'].includes(value.source)||value.modelId!==null&&typeof value.modelId!=='string')throw new Error('MODEL_CONFIG_INVALID');modelPreference=value;}catch(error){if(error.code!=='ENOENT')throw error;}
     memoryStore=createMemoryStore({dataDir,identity,cryptoAdapter});initializeAgent();
+    projectStore=createProjectStore({dataDir,identity});
     const owner=identity;demoWrite=createDemoWrite({dataDir,identity:owner,checkContext:async()=>identity===owner&&!switching&&await authorized(owner)});
   };
   async function authorized(owner=identity){
@@ -134,8 +137,10 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     if(owner!==identity||writeSource!==demoWrite)return snapshot();
     base.demonstration=!productView||productView.authenticated?demo.snapshot():null;
     base.memory=!productView||productView.authenticated?await memories.snapshot():{revision:0,available:false,entries:[],settings:{rememberEpisodes:false,rememberLessons:false}};
+    const projects=projectStore;
+    base.projects=!productView||productView.authenticated?await projects.snapshot():{revision:0,projects:[],currentId:null};
     base.busy=base.busy||demo.active||demo.busy;
-    if(demo!==demonstration||memories!==memoryStore)return snapshot();
+    if(demo!==demonstration||memories!==memoryStore||projects!==projectStore)return snapshot();
     if(productView?.authenticated&&!await authorized(owner).catch(()=>false))return snapshot();
     return base;
   }
@@ -295,6 +300,20 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
         const skills=await agentStore.listSkills(),available=new Set(siteBindings.map(s=>JSON.stringify(s)));
         result.recommendedSkills=skills.filter(s=>s.template.siteBindings.every(binding=>available.has(JSON.stringify(binding)))&&[s.name,s.goal].some(t=>t&&payload.query.includes(t.slice(0,6)))).slice(0,3).map(s=>({id:s.id,name:s.name,version:s.version}));
         if(owner!==identity||memories!==memoryStore||!await authorized(owner))throw new Error('CANCELLED');return result;
+      }
+      case 'project.createEmpty':return changeSites(()=>projectStore.createEmpty(payload));
+      case 'project.importFolder':return changeSites(()=>projectStore.importFolder(payload));
+      case 'project.rename':return changeSites(()=>projectStore.rename(payload));
+      case 'project.setCurrent':return changeSites(()=>projectStore.setCurrent(payload));
+      case 'project.remove':return changeSites(()=>projectStore.remove(payload));
+      case 'project.openFolder':{
+        requireIdle();const owner=identity,store=projectStore;
+        const view=await store.snapshot();const project=view.projects.find(entry=>entry.id===payload.id);
+        if(!project)throw new Error('PROJECT_NOT_FOUND');
+        await openPath(project.root);
+        if(owner!==identity||store!==projectStore)throw new Error('CANCELLED');
+        await store.setCurrent({id:project.id,expectedRevision:view.revision});
+        await notify();return {opened:true};
       }
       case 'demo.start':return launchAgent(()=>demonstration.start({goal:payload.goal,siteIds:payload.siteIds,mode:payload.mode}),id=>demonstration.cancel({id}));
       case 'demo.observe':case 'demo.act':case 'demo.handoff':case 'demo.resume':case 'demo.finish':{

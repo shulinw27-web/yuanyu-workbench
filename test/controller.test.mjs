@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createCipheriv,createDecipheriv,randomBytes } from 'node:crypto';
 import { createController } from '../src/controller.mjs';
 
@@ -111,4 +111,28 @@ test('身份切换期间的并发snapshot不会混合Alice任务与Bob身份',as
   const pendingSnapshots=Array.from({length:12},()=>controller.snapshot());const switching=controller.invoke('identity.switch',{userId:'bob'});
   for(const state of await Promise.all(pendingSnapshots))assert.equal(state.agentTasks.length,state.identity.userId==='alice'?1:0);
   await switching;const state=await controller.snapshot();assert.equal(state.identity.userId,'bob');assert.equal(state.agentTasks.length,0);
+});
+
+test('项目动作经控制器走动作通道：导入与新建、打开位置、记录删除与身份隔离',async t=>{
+  const opened=[];
+  const {controller}=await fixture(t,{openPath:async target=>{opened.push(target);}});
+  const folder=await mkdtemp(join(tmpdir(),'yuanyu-ctl-import-'));t.after(()=>rm(folder,{recursive:true,force:true}));
+  const {realpath}=await import('node:fs/promises');
+  const imported=await controller.invoke('project.importFolder',{root:folder});
+  assert.equal(imported.origin,'folder');assert.equal(imported.root.toLowerCase(),(await realpath(folder)).toLowerCase());
+  const created=await controller.invoke('project.createEmpty',{name:'控制器项目',root:join(folder,'子项目')});
+  assert.equal(created.origin,'empty');
+  let snap=await controller.snapshot();
+  assert.equal(snap.projects.projects.length,2);assert.equal(snap.projects.currentId,created.id);
+  await assert.rejects(controller.invoke('project.createEmpty',{name:'坏路径',root:join(resolve(),'repo-child')}),/PROJECT_UNSAFE_PATH/);
+  await controller.invoke('project.openFolder',{id:imported.id});
+  assert.equal(opened.length,1);assert.equal(opened[0].toLowerCase(),imported.root.toLowerCase());
+  snap=await controller.snapshot();
+  assert.equal(snap.projects.currentId,imported.id);
+  await controller.invoke('project.remove',{id:created.id,expectedRevision:snap.projects.revision});
+  snap=await controller.snapshot();
+  assert.equal(snap.projects.projects.length,1);
+  await controller.invoke('identity.switch',{userId:'bob'});
+  snap=await controller.snapshot();
+  assert.equal(snap.projects.projects.length,0,'跨身份项目必须隔离');
 });
