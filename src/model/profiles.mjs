@@ -2,6 +2,7 @@ import {promises as fs} from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
 
 const REPOSITORY=path.resolve(fileURLToPath(new URL('../..',import.meta.url)));
 const LOCKS=new Set();
@@ -51,14 +52,22 @@ async function atomicJSON(file,value){
   try{handle=await fs.open(temporary,'wx',0o600);await handle.writeFile(encoded,'utf8');await handle.sync();await handle.close();handle=undefined;await fs.rename(temporary,file);}
   finally{await handle?.close().catch(()=>{});await fs.rm(temporary,{force:true}).catch(()=>{});}
 }
+const lockHolderImage=pid=>{try{const listing=spawnSync('tasklist',['/FI',`PID eq ${pid}`,'/FO','CSV','/NH'],{encoding:'utf8',timeout:5000});return listing.stdout?.trim().split(/\r?\n/)[0]?.match(/^"([^"]+)"/)?.[1]?.toLowerCase()??'';}catch{return '';}};
+/** 存活校验：pid 存活时在 Windows 上比对映像名，防止退出进程的 PID 被系统进程复用造成永久假锁。 */
+const holderAlive=async lock=>{
+  let alive=true;try{process.kill(lock.pid,0);}catch(error){if(error.code==='ESRCH')alive=false;}
+  if(!alive)return false;if(process.platform!=='win32')return true;
+  const expected=(typeof lock.image==='string'&&lock.image.trim()!==''?lock.image:path.basename(process.execPath)).toLowerCase();
+  const observed=lockHolderImage(lock.pid);return observed===''||observed===expected;
+};
 async function lockRoot(resolved){
   await directory(resolved);const root=await fs.realpath(resolved);assert(!within(REPOSITORY,root),'MODEL_PROFILE_UNSAFE_PATH');
   const key=process.platform==='win32'?root.toLowerCase():root;
   if(!LOCKS.has(key)){
     const file=path.join(root,'.model-profiles.lock');
     const previous=await readJSON(file);
-    if(previous){assert(Number.isInteger(previous.pid)&&previous.pid>0,'MODEL_PROFILE_LOCKED');let alive=true;try{process.kill(previous.pid,0);}catch(error){if(error.code==='ESRCH')alive=false;}assert(!alive,'MODEL_PROFILE_LOCKED');await fs.rm(file);}
-    let handle;try{handle=await fs.open(file,'wx',0o600);await handle.writeFile(JSON.stringify({pid:process.pid}));await handle.sync();LOCKS.add(key);}catch(error){if(error.code==='EEXIST')throw fail('MODEL_PROFILE_LOCKED');throw error;}finally{await handle?.close();}
+    if(previous){assert(Number.isInteger(previous.pid)&&previous.pid>0,'MODEL_PROFILE_LOCKED');assert(!await holderAlive(previous),'MODEL_PROFILE_LOCKED');await fs.rm(file);}
+    let handle;try{handle=await fs.open(file,'wx',0o600);await handle.writeFile(JSON.stringify({pid:process.pid,image:path.basename(process.execPath)}));await handle.sync();LOCKS.add(key);}catch(error){if(error.code==='EEXIST')throw fail('MODEL_PROFILE_LOCKED');throw error;}finally{await handle?.close();}
   }
   return root;
 }

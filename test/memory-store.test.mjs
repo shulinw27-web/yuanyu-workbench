@@ -4,6 +4,7 @@ import {mkdtemp,rm,readFile,writeFile,mkdir,symlink,access,copyFile} from 'node:
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {randomBytes,createCipheriv,createDecipheriv} from 'node:crypto';
+import {spawn,spawnSync} from 'node:child_process';
 import {createMemoryStore,pauseRestoredMemory} from '../src/memory/store.mjs';
 import {DAY} from '../src/memory/policy.mjs';
 
@@ -23,6 +24,23 @@ test('独立记忆库只持久化加密内容，账号隔离且空读取不创�
   assert.equal((await f.store.snapshot()).entries[0].content,entry.content);assert.ok(!JSON.stringify(await f.store.snapshot()).includes('cipher'));assert.deepEqual((await f.make(bob).list()).entries,[]);
   assert.throws(()=>f.make({...alice,userId:'other'}),/MEMORY_IDENTITY_INVALID/);assert.throws(()=>f.make({...alice,companyId:'wrong'}),/MEMORY_IDENTITY_INVALID/);
   const copied=f.path(bob);await mkdir(join(f.dataDir,'memory',bob.companyId,bob.userId),{recursive:true});await copyFile(f.path(alice),copied);await assert.rejects(f.make(bob).list(),/MEMORY_STORE_INVALID/);
+});
+
+test('陈旧记忆锁在PID被其他进程映像复用后自动恢复，同映像存活进程仍拒绝',async t=>{
+  if(process.platform!=='win32')return t.skip('映像名校验仅在Windows平台实现');
+  if(spawnSync('ping',['-n','1','127.0.0.1'],{encoding:'utf8'}).error)return t.skip('缺少ping工具');
+  const holder=spawn('ping',['-n','60','127.0.0.1'],{stdio:'ignore'});
+  t.after(()=>{try{holder.kill();}catch{/* already exited */}});
+  assert.ok(holder.pid&&holder.pid!==process.pid);
+  const reusedDir=await mkdtemp(join(tmpdir(),'yuanyu-memory-lock-reuse-'));t.after(()=>rm(reusedDir,{recursive:true,force:true}));
+  await writeFile(join(reusedDir,'.memory.lock'),JSON.stringify({pid:holder.pid,image:'electron.exe'}));
+  const f=await fixture(t);
+  const reused=createMemoryStore({dataDir:reusedDir,identity:alice,cryptoAdapter:f.cryptoAdapter});
+  const entry=await reused.save(input());assert.equal(entry.status,'active');
+  const liveDir=await mkdtemp(join(tmpdir(),'yuanyu-memory-lock-live-'));t.after(()=>rm(liveDir,{recursive:true,force:true}));
+  await writeFile(join(liveDir,'.memory.lock'),JSON.stringify({pid:holder.pid,image:'ping.exe'}));
+  const live=createMemoryStore({dataDir:liveDir,identity:alice,cryptoAdapter:f.cryptoAdapter});
+  await assert.rejects(live.save(input()),/MEMORY_LOCKED/);
 });
 
 test('绑定拒绝跨身份及跨记录搬移密文，加密不可用时不回退明文',async t=>{

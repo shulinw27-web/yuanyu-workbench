@@ -5,9 +5,6 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { startMockSystems } from './mock/systems.mjs';
 import {startInteractiveMockSite} from './mock/interactive-fixture.mjs';
-import {createProductClient} from './product/client.mjs';
-import {createPromotionService} from './service/index.mjs';
-import {readFile,writeFile} from 'node:fs/promises';
 import { createController, safeError } from './controller.mjs';
 
 const here=dirname(fileURLToPath(import.meta.url));
@@ -21,7 +18,7 @@ const cryptoAdapter={
   encrypt:text=>safeStorage.encryptString(text).toString('base64'),
   decrypt:cipher=>safeStorage.decryptString(Buffer.from(cipher,'base64'))
 };
-let controller,mocks,interactiveMock,promotionService,win,quitting=false;
+let controller,mocks,interactiveMock,win,quitting=false;
 app.whenReady().then(async()=>{
  if(process.argv.includes('--smoke'))console.log('SMOKE: Electron ready');
  try {
@@ -42,18 +39,10 @@ app.whenReady().then(async()=>{
     await mocks.close();app.exit(0);
   } else {
     interactiveMock=await startInteractiveMockSite({port:15333});
-    const productConfigPath=join(dataDir,'product.local.json');
-    try{await writeFile(productConfigPath,JSON.stringify({schemaVersion:1,serviceUrl:'http://127.0.0.1:15334',allowLocalDemo:true,autoStartLocalDemo:true},null,2),{flag:'wx',mode:0o600});}catch(error){if(error.code!=='EEXIST')throw error;}
-    const productConfig=JSON.parse(await readFile(productConfigPath,'utf8'));
-    if(productConfig.schemaVersion!==1||Object.keys(productConfig).some(key=>!['schemaVersion','serviceUrl','allowLocalDemo','autoStartLocalDemo'].includes(key)))throw new Error('SERVICE_CONFIG_INVALID');
-    if(productConfig.autoStartLocalDemo===true){
-      if(productConfig.allowLocalDemo!==true||productConfig.serviceUrl!=='http://127.0.0.1:15334')throw new Error('SERVICE_CONFIG_INVALID');
-      promotionService=await createPromotionService({dataDir:join(dataDir,'promotion-service'),port:15334,demo:true,monthlyTokens:100000,dailyRequests:20});
-    }
-    const productClient=createProductClient({dataDir,cryptoAdapter,baseUrl:productConfig.serviceUrl,allowLocalDemo:productConfig.allowLocalDemo===true});
+    // 个人开源版：不启动账号/推广服务，不接入登录注册；模型仅使用用户自己的 API 配置。
     win=new BrowserWindow({width:1420,height:940,minWidth:780,minHeight:640,backgroundColor:nativeTheme.shouldUseDarkColors?'#202020':'#ffffff',autoHideMenuBar:true,webPreferences:{preload:join(here,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true}});
     const uiUrl=pathToFileURL(join(here,'ui','index.html')).href;
-    controller=await createController({dataDir,cryptoAdapter,systems:mocks.systems,BrowserWindow,builtinSites:[interactiveMock.site],productClient,copyText:text=>clipboard.writeText(text),openPath:async path=>{const error=await shell.openPath(path);if(error)throw new Error('ARTIFACT_OPEN_FAILED');},onUpdate:snapshot=>{if(win && !win.isDestroyed())win.webContents.send('workbench:update',snapshot);}});
+    controller=await createController({dataDir,cryptoAdapter,systems:mocks.systems,BrowserWindow,builtinSites:[interactiveMock.site],copyText:text=>clipboard.writeText(text),openPath:async path=>{const error=await shell.openPath(path);if(error)throw new Error('ARTIFACT_OPEN_FAILED');},onUpdate:snapshot=>{if(win && !win.isDestroyed())win.webContents.send('workbench:update',snapshot);}});
     ipcMain.handle('workbench:invoke',async(event,action,payload)=>{
       if(event.sender!==win.webContents || event.senderFrame!==win.webContents.mainFrame || event.senderFrame.url!==uiUrl)return {ok:false,error:{code:'IPC_DENIED',message:'请求来源不受信任。'}};
       try{return {ok:true,data:await controller.invoke(action,payload)};}catch(error){return {ok:false,error:safeError(error)};}
@@ -66,12 +55,12 @@ app.whenReady().then(async()=>{
  } catch (error) {
   process.stderr.write('工作台启动或集成验证失败，请检查本机数据目录与测试报告。\n');
   if(process.argv.includes('--smoke'))process.stderr.write(String(error?.stack || error?.message || 'TEST_FAILED').replaceAll('demo123','[synthetic credential redacted]')+'\n');
-  await controller?.close();await interactiveMock?.close();await promotionService?.close();await mocks?.close();app.exit(1);
+  await controller?.close();await interactiveMock?.close();await mocks?.close();app.exit(1);
  }
 });
 app.on('window-all-closed',()=>{if(!process.argv.includes('--smoke'))app.quit();});
 app.on('before-quit',event=>{
   if(quitting)return;
   event.preventDefault();quitting=true;
-  Promise.resolve().then(()=>controller?.close()).then(()=>interactiveMock?.close()).then(()=>promotionService?.close()).then(()=>mocks?.close()).finally(()=>app.exit(0));
+  Promise.resolve().then(()=>controller?.close()).then(()=>interactiveMock?.close()).then(()=>mocks?.close()).finally(()=>app.exit(0));
 });

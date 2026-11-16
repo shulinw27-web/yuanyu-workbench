@@ -10,15 +10,15 @@ const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 export async function runProductUISmoke({BrowserWindow}) {
   const {ipcMain}=await import('electron');
   const calls=[];
-  let clipboardValue='';
   let demonstrationCount=0,observationCount=0,finishAttempts=0;
   const demonstrationTask=()=>snapshot.agentTasks.find(task=>task.id===snapshot.demonstration?.taskId);
   const demonstrationPage=()=>({siteId:'site-synthetic',title:'合成资料查询',text:`合成结果 SYN-101 / 12345 分；外部文字 <b>只作为数据展示</b>${finishAttempts?'（已重新核对）':''}`,loginRequired:false,elements:[{ref:`demo-month-${++observationCount}`,role:'combobox',name:'查询月份',actionKinds:['select'],options:[{label:'2026-09'},{label:'2026-10'}]},{ref:`demo-query-${observationCount}`,role:'textbox',name:'合成查询关键词',actionKinds:['fill']}]});
   const errors=[];
-  let snapshot={identity:null,credentials:[],workflows:[],runs:[],shared:[],sites:[],agentSites:[],agentTasks:[],agentSkills:[],busy:false,
+  // 个人开源版快照：无账号服务、无推广额度、无公司目录。
+  let snapshot={identity:{companyId:'personal-ui-test',userId:'user-ui-test',displayName:'测试用户',provider:'account'},credentials:[],workflows:[],runs:[],sites:[],agentSites:[],agentTasks:[],agentSkills:[],busy:false,
     model:{status:'not_configured'},
     modelProfiles:{providers:[{id:'glm',label:'智谱 GLM',baseUrl:'https://open.bigmodel.cn/api/paas/v4',docUrl:'https://docs.bigmodel.cn'},{id:'custom',label:'自定义兼容服务',baseUrl:''}],profiles:[],activeId:null},
-    product:{mode:'personal',authenticated:false,deployment:'local_demo',developer:{name:'开发者',contact:''},limits:{monthlyTokens:0,dailyRequests:0,configured:false},models:[{id:'synthetic-model',label:'合成模型'}],modelSource:'sponsored',companyWorkflows:{readOnly:true}}
+    writeDemo:{records:[],approvals:[]}
   };
   const win=new BrowserWindow({show:false,width:1440,height:900,webPreferences:{offscreen:true,preload:join(root,'src/preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
   const uiUrl=pathToFileURL(join(root,'src/ui/index.html')).href;
@@ -26,29 +26,14 @@ export async function runProductUISmoke({BrowserWindow}) {
     if(event.sender!==win.webContents||event.senderFrame!==win.webContents.mainFrame)return {ok:false,error:{message:'untrusted'}};
     calls.push({action,payload:structuredClone(payload)});
     if(action==='snapshot')return {ok:true,data:snapshot};
-    if(action==='developer.contact.copy'){clipboardValue=snapshot.product.developer.contact;return {ok:true,data:{copied:true}};}
-    if(action==='auth.register'||action==='auth.login') {
-      snapshot.product.authenticated=true;snapshot.product.account={id:'ui-test',email:payload.email,displayName:payload.name||'测试用户',tier:'personal',verified:false};
-      snapshot.identity={companyId:'personal-ui-test',userId:'user-ui-test',displayName:'测试用户',provider:'account'};
-      snapshot.product.usage={month:'2026-11',monthlyTokens:0,dailyRequests:0,usedTokens:0,reservedTokens:0,remainingTokens:0,dailyRequestsUsed:0};
-      snapshot.writeDemo={records:[],approvals:[]};
-      snapshot.shared=[{id:'public-sample',name:'公开采购示例',description:'合成流程示例',publicSample:true,publisher:{displayName:'公开示例'},version:1}];
-      return {ok:true,data:{account:snapshot.product.account,demoVerificationCode:'654321'}};
-    }
-    if(action==='auth.verify'){snapshot.product.account.verified=true;return {ok:true,data:{account:snapshot.product.account}};}
-    if(action==='auth.logout') {
-      snapshot={...snapshot,identity:null,shared:[],agentTasks:[],agentSkills:[],demonstration:null,busy:false,modelProfiles:{...snapshot.modelProfiles,profiles:[],activeId:null},model:{status:'not_configured'},product:{...snapshot.product,authenticated:false,account:undefined,usage:undefined}};
-      return {ok:true,data:{loggedOut:true}};
-    }
     if(action==='model.profile.save') {
       assert.equal(payload.apiKey,'synthetic-ui-key-123');
       const {apiKey,...profile}=payload;
       profile.id='profile-ui-test';profile.revision=1;profile.configured=true;
-      snapshot.modelProfiles.profiles=[profile];snapshot.modelProfiles.activeId=profile.id;snapshot.product.modelSource='byok';
+      snapshot.modelProfiles.profiles=[profile];snapshot.modelProfiles.activeId=profile.id;
       snapshot.model={status:'ready',model:profile.model,host:'open.bigmodel.cn',dataScope:profile.dataScope};
       return {ok:true,data:profile};
     }
-    if(action==='model.source'){snapshot.product.modelSource=payload.source;return {ok:true,data:{}};}
     if(action==='model.test'){assert.deepEqual(payload,{consent:true});return {ok:true,data:{synthetic:true}};}
     if(action==='agent.skill.edit') {
       assert.equal(payload.expectedVersion,1);assert.equal(payload.name,'按月份核对');
@@ -143,44 +128,11 @@ export async function runProductUISmoke({BrowserWindow}) {
   };
   try {
     await win.loadURL(uiUrl);
-    await wait(`document.body.classList.contains('product-locked')`);
-    assert.equal(await evaluate(`getComputedStyle(document.querySelector('.app-shell')).display`),'none');
-    await capture('product-entry');
-    await click('#entry-enterprise');
-    assert.equal(await evaluate(`document.querySelector('#entry-enterprise-panel').hidden`),false);
-    assert.match(await evaluate(`document.querySelector('#entry-enterprise-panel .developer-contact-value').textContent`),/微信号待配置/);
-    assert.equal(await evaluate(`document.querySelectorAll('a[href^="mailto:"]').length`),0);
-    snapshot.product.developer={name:'开发者',contactType:'wechat',contact:'wsltest'};
-    win.webContents.send('workbench:update',snapshot);
-    await wait(`document.querySelector('#entry-enterprise-panel .developer-contact-value').textContent.includes('wsltest')`);
-    await capture('product-enterprise-wechat');
-    await click('#entry-enterprise-panel [data-copy-developer]');
-    await wait(`document.querySelector('#toast').textContent.includes('微信号已复制')`);
-    assert.equal(clipboardValue,'wsltest');
-    await click('#entry-enterprise-panel [data-entry-back]');await click('#entry-personal');
-    await evaluate(`document.querySelector('#auth-email').value='ui@example.test';document.querySelector('#auth-name').value='UI测试';document.querySelector('#auth-password').value='synthetic-password-123';document.querySelector('#product-auth-form').requestSubmit();`);
-    assert.equal(await evaluate(`document.querySelector('#auth-password').value`),'');
-    await wait(`!document.body.classList.contains('product-locked') && document.querySelector('#settings-demo-code').textContent.includes('654321')`);
-    assert.equal(calls.filter(c=>c.action==='auth.register').length,1);
-    assert.equal(await evaluate(`document.querySelector('.identity-picker').hidden`),true);
-    assert.match(await evaluate(`document.querySelector('#product-usage-note').textContent`),/尚未开放/);
-    assert.equal(await evaluate(`document.querySelector('#model-source-select option[value="sponsored"]').disabled`),true);
-    await evaluate(`document.querySelector('#settings-verification-code').value='654321';document.querySelector('#settings-verify-form').requestSubmit();`);
-    await wait(`document.querySelector('#product-account-status').textContent==='已验证'`);
-    snapshot.product.limits={monthlyTokens:100000,dailyRequests:20,configured:true};
-    snapshot.product.usage={month:'2026-11',monthlyTokens:100000,dailyRequests:20,usedTokens:95000,reservedTokens:5000,remainingTokens:0,dailyRequestsUsed:19};
-    win.webContents.send('workbench:update',snapshot);
-    await wait(`document.querySelector('#product-usage-note').textContent.includes('本月推广额度已用完或已预留')`);
-    snapshot.product.usage={...snapshot.product.usage,remainingTokens:5000,reservedTokens:0,dailyRequestsUsed:20};
-    win.webContents.send('workbench:update',snapshot);
-    await wait(`document.querySelector('#product-usage-note').textContent.includes('今日推广请求次数已用完')`);
-    snapshot.product.usage={...snapshot.product.usage,dailyRequestsUsed:2};
-    win.webContents.send('workbench:update',snapshot);
-    await click('.nav-item[data-view="company"]');
-    assert.match(await evaluate(`document.querySelector('#company-list').textContent`),/公开采购示例/);
-    assert.equal(await evaluate(`document.querySelector('#company-list button').disabled`),true);
-    assert.equal(calls.filter(c=>c.action==='workflow.import'||c.action==='workflow.publish').length,0);
-    await capture('product-company-readonly');
+    await wait(`!document.querySelector('#plan-submit').disabled`);
+    // 个人开源版：登录注册与公司流程入口必须从界面移除；自定义模型连接入口必须直接可见。
+    assert.equal(await evaluate(`Boolean(document.querySelector('#product-entry, [data-view="company"], #view-company, #model-source-settings, #product-account-settings, #developer-contact-dialog'))`),false,'登录注册与公司流程元素不应存在');
+    assert.equal(await evaluate(`Boolean(document.querySelector('#model-profiles-settings'))`),true,'自定义模型连接入口必须可见');
+    assert.equal(await evaluate(`document.body.classList.contains('product-locked')`),false,'个人开源版不得出现账号锁定层');
     await click('.nav-item[data-view="settings"]');await click('#new-model-profile');
     await evaluate(`document.querySelector('#model-profile-label').value='测试模型';document.querySelector('#model-profile-model').value='test-glm';document.querySelector('#model-profile-api-key').value='synthetic-ui-key-123';document.querySelector('#model-profile-form').requestSubmit();`);
     assert.equal(await evaluate(`document.querySelector('#model-profile-api-key').value`),'');
@@ -239,7 +191,7 @@ export async function runProductUISmoke({BrowserWindow}) {
     await wait(`document.querySelector('#agent-run-dialog').open`);
     await evaluate(`document.querySelector('#agent-run-param-0').value='2026-10';document.querySelector('#agent-run-form').requestSubmit()`);
     await wait(`!document.querySelector('#task-plan').hidden && document.querySelector('#task-plan').textContent.includes('本机只读重放')`);
-    assert.match(await evaluate(`document.querySelector('#task-plan').textContent`),/不发送模型，不消耗推广额度/);
+    assert.match(await evaluate(`document.querySelector('#task-plan').textContent`),/不发送模型/);
     assert.equal(await evaluate(`document.querySelector('#browser-model-mode-option').disabled`),true,'未配置模型时新模型浏览器任务仍不可用');
     assert.equal(await evaluate(`document.querySelector('#model-consent-row').hidden && document.querySelector('#page-consent-row').hidden`),true);
     await evaluate(`[...document.querySelectorAll('#task-plan button')].find(button=>button.textContent==='确认执行').click()`);
@@ -270,10 +222,11 @@ export async function runProductUISmoke({BrowserWindow}) {
     await evaluate(`[...document.querySelectorAll('#active-run button')].find(button=>button.textContent==='继续任务').click()`);
     await wait(`document.querySelector('#active-run .replay-status')?.textContent.includes('第 1 / 4 步')`);
     assert.equal(calls.filter(call=>call.action==='agent.resume').length,1);assert.equal(calls.filter(call=>call.action==='model.test').length,1);
-    const identityBefore=structuredClone(snapshot.identity),productBefore=structuredClone(snapshot.product);
-    win.webContents.send('workbench:update',{...snapshot,identity:null,product:{...snapshot.product,authenticated:false},agentTasks:[],agentSkills:[],busy:false});
+    // 账号宿主撤权兼容：界面必须锁定并清空运行内容，防止误操作。
+    win.webContents.send('workbench:update',{...snapshot,identity:null,product:{mode:'personal',authenticated:false},agentTasks:[],agentSkills:[],busy:false});
     await wait(`document.body.classList.contains('product-locked') && document.querySelector('.replay-status')===null`);
-    snapshot.identity=identityBefore;snapshot.product=productBefore;snapshot.model=configuredModel;snapshot.agentTasks=[];snapshot.busy=false;
+    const {product:_revoked,...restored}=snapshot;
+    snapshot=structuredClone(restored);snapshot.model=configuredModel;snapshot.agentTasks=[];snapshot.busy=false;
     win.webContents.send('workbench:update',snapshot);await wait(`!document.body.classList.contains('product-locked')`);
     const startDemonstration=async()=>{
       await click('.nav-item[data-view="workspace"]');await click('#demonstration-open');
@@ -346,44 +299,19 @@ export async function runProductUISmoke({BrowserWindow}) {
       assert.equal(await evaluate(`document.documentElement.scrollWidth<=window.innerWidth`),true,`settings overflow at ${width}`);
       assert.equal(await evaluate(`document.querySelector('#model-profile-list').getBoundingClientRect().right<=window.innerWidth`),true);
     }
-    await click('#auth-logout');await click('#confirm-action');
-    await wait(`document.body.classList.contains('product-locked')`);
-    assert.equal(await evaluate(`document.querySelector('#model-profile-list').textContent.includes('测试模型')`),false);
-    win.setContentSize(1440,900);await capture('product-entry-enabled');
-    for(const [width,height] of [[1440,900],[1024,768],[390,844]]) {
-      win.setContentSize(width,height);await evaluate(`new Promise(resolve=>requestAnimationFrame(resolve))`);
-      assert.equal(await evaluate(`document.documentElement.scrollWidth<=window.innerWidth`),true,`entry overflow at ${width}`);
-    }
-    await click('#entry-personal');await click('[data-auth-tab="login"]');
-    assert.equal(await evaluate(`document.querySelector('#auth-name').required`),false);
-    assert.equal(await evaluate(`document.querySelector('#auth-password').autocomplete`),'current-password');
-    await evaluate(`document.querySelector('#auth-email').value='ui@example.test';document.querySelector('#auth-password').value='synthetic-password-123';document.querySelector('#product-auth-form').requestSubmit();`);
-    assert.equal(await evaluate(`document.querySelector('#auth-password').value`),'');
-    await wait(`!document.body.classList.contains('product-locked')`);
-    assert.equal(calls.filter(c=>c.action==='auth.login').length,1);
-    await click('.nav-item[data-view="settings"]');await click('#new-model-profile');
-    await evaluate(`document.querySelector('#model-profile-api-key').value='synthetic-ephemeral-secret';document.querySelector('#task-input').value='旧账号任务内容';`);
-    snapshot.product.authenticated=false;snapshot.identity=null;
-    snapshot.modelProfiles.profiles=[];snapshot.modelProfiles.activeId=null;
-    win.webContents.send('workbench:update',snapshot);
-    await wait(`document.body.classList.contains('product-locked') && !document.querySelector('#model-profile-dialog').open`);
-    assert.equal(await evaluate(`document.querySelector('#model-profile-api-key').value`),'');
-    assert.equal(await evaluate(`document.querySelector('#task-input').value`),'');
-    await click('#entry-personal');await click('[data-auth-tab="login"]');
-    await evaluate(`document.querySelector('#auth-email').value='ui@example.test';document.querySelector('#auth-password').value='synthetic-password-123';document.querySelector('#product-auth-form').requestSubmit();`);
-    await wait(`!document.body.classList.contains('product-locked')`);
+    win.setContentSize(1440,900);
+    // 撤权清理回归：锁定时必须清空示范私有内容与输入。
     await startDemonstration();await click('#active-run .demonstration-handoff');
     await wait(`document.querySelector('#active-run .demonstration-resume') && !document.querySelector('#active-run .demonstration-resume').disabled`);
     await click('#active-run .demonstration-resume');
     await wait(`document.querySelector('#active-run .demonstration-element') && !document.querySelector('#active-run .demonstration-element').disabled`);
     await evaluate(`const control=document.querySelector('#active-run .demonstration-element');control.selectedIndex=1;control.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#active-run .demonstration-value').value='旧身份私有查询';`);
-    snapshot.product.authenticated=false;snapshot.identity=null;snapshot.busy=false;snapshot.demonstration=null;snapshot.agentTasks=[];snapshot.agentSkills=[];
-    win.webContents.send('workbench:update',snapshot);
+    win.webContents.send('workbench:update',{...snapshot,identity:null,product:{mode:'personal',authenticated:false},busy:false,demonstration:null,agentTasks:[],agentSkills:[]});
     await wait(`document.body.classList.contains('product-locked') && document.querySelector('.demonstration-panel')===null`);
     assert.equal(await evaluate(`document.body.textContent.includes('旧身份私有查询')`),false);
     assert.equal(await evaluate(`document.querySelector('#demonstration-goal').value`),'');
     assert.equal(errors.length,0,errors.join('\n'));
-    console.log('SMOKE product UI: 个人/企业入口、注册/额度、模型费用确认、合成写入与参数化、受控人工示范，以及无模型HTTPS Skill/有限引用恢复进度/登录从头重放/页面异常检查/身份清理与 6 档布局通过（合成 IPC）。');
+    console.log('SMOKE personal UI: 个人开源版入口收敛（无登录注册/公司流程元素）、自定义模型连接与费用确认、合成写入与参数化、受控人工示范、无模型HTTPS Skill/有限引用恢复进度/登录从头重放/页面异常检查/撤权清理与 6 档布局通过（合成 IPC）。');
   } finally {ipcMain.removeHandler('workbench:invoke');win.destroy();}
 }
 

@@ -2,6 +2,7 @@ import {promises as fs} from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
 import {isAccountIdentity} from '../product/client.mjs';
 import {MEMORY_KINDS,memoryFields,memoryId,memoryText,memoryBindings,memorySource,memoryExpiry,effectiveMemoryStatus,withinMemoryScope,memoryError,memoryAssert as assert} from './policy.mjs';
 import {retrieveMemories} from './retriever.mjs';
@@ -23,7 +24,15 @@ function validateState(state,owner){
   }catch{throw memoryError('MEMORY_STORE_INVALID');}
 }
 async function atomicWrite(file,state){const encoded=JSON.stringify(state,null,2)+'\n';assert(Buffer.byteLength(encoded)<=MAX_BYTES,'MEMORY_LIMIT');const temporary=path.join(path.dirname(file),`.memory-${randomUUID()}.tmp`);let handle;try{await safePath(file);handle=await fs.open(temporary,'wx',0o600);await handle.writeFile(encoded);await handle.sync();await handle.close();handle=null;await fs.rename(temporary,file);}finally{await handle?.close().catch(()=>{});await fs.rm(temporary,{force:true}).catch(()=>{});}}
-async function writableRoot(root){await fs.mkdir(root,{recursive:true,mode:0o700});await safePath(root);const key=process.platform==='win32'?root.toLowerCase():root;if(LOCKS.has(key))return;const lock=path.join(root,'.memory.lock'),previous=await readState(lock);if(previous){assert(Number.isSafeInteger(previous.pid)&&previous.pid>0,'MEMORY_LOCKED');let alive=true;try{process.kill(previous.pid,0);}catch(error){if(error.code==='ESRCH')alive=false;}assert(!alive,'MEMORY_LOCKED');await fs.rm(lock);}let handle;try{handle=await fs.open(lock,'wx',0o600);await handle.writeFile(JSON.stringify({pid:process.pid}));await handle.sync();LOCKS.add(key);}catch(error){if(error.code==='EEXIST')throw memoryError('MEMORY_LOCKED');throw error;}finally{await handle?.close();}}
+const lockHolderImage=pid=>{try{const listing=spawnSync('tasklist',['/FI',`PID eq ${pid}`,'/FO','CSV','/NH'],{encoding:'utf8',timeout:5000});return listing.stdout?.trim().split(/\r?\n/)[0]?.match(/^"([^"]+)"/)?.[1]?.toLowerCase()??'';}catch{return '';}};
+/** 存活校验：pid 存活时在 Windows 上比对映像名，防止退出进程的 PID 被系统进程复用造成永久假锁。 */
+const holderAlive=async lock=>{
+  let alive=true;try{process.kill(lock.pid,0);}catch(error){if(error.code==='ESRCH')alive=false;}
+  if(!alive)return false;if(process.platform!=='win32')return true;
+  const expected=(typeof lock.image==='string'&&lock.image.trim()!==''?lock.image:path.basename(process.execPath)).toLowerCase();
+  const observed=lockHolderImage(lock.pid);return observed===''||observed===expected;
+};
+async function writableRoot(root){await fs.mkdir(root,{recursive:true,mode:0o700});await safePath(root);const key=process.platform==='win32'?root.toLowerCase():root;if(LOCKS.has(key))return;const lock=path.join(root,'.memory.lock'),previous=await readState(lock);if(previous){assert(Number.isSafeInteger(previous.pid)&&previous.pid>0,'MEMORY_LOCKED');assert(!await holderAlive(previous),'MEMORY_LOCKED');await fs.rm(lock);}let handle;try{handle=await fs.open(lock,'wx',0o600);await handle.writeFile(JSON.stringify({pid:process.pid,image:path.basename(process.execPath)}));await handle.sync();LOCKS.add(key);}catch(error){if(error.code==='EEXIST')throw memoryError('MEMORY_LOCKED');throw error;}finally{await handle?.close();}}
 
 /** Only trusted main-process callers may construct this store or confirm candidates. */
 export function createMemoryStore({dataDir,identity,cryptoAdapter,now=Date.now}={}){

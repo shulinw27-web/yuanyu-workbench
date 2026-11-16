@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createAgentStore,instantiateSkillRecipe } from '../src/agent/store.mjs';
 
 const identities = {
@@ -63,6 +63,26 @@ test('a completed browser task saves a private replay template without original 
   assert.equal(saved.schemaVersion, 1);
   assert.equal(saved.tasks[0].kind, 'browser');
   assert.equal(saved.runs, undefined);
+});
+
+test('陈旧任务存储锁在PID被其他进程映像复用后自动恢复，同映像存活进程仍拒绝', async (t) => {
+  if (process.platform !== 'win32') return t.skip('映像名校验仅在Windows平台实现');
+  if (spawnSync('ping', ['-n', '1', '127.0.0.1'], { encoding: 'utf8' }).error) return t.skip('缺少ping工具');
+  const holder = spawn('ping', ['-n', '60', '127.0.0.1'], { stdio: 'ignore' });
+  t.after(() => { try { holder.kill(); } catch { /* already exited */ } });
+  assert.ok(holder.pid && holder.pid !== process.pid);
+  const reusedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yuanyu-agent-lock-reuse-'));
+  t.after(() => fs.rm(reusedDir, { recursive: true, force: true }));
+  await fs.writeFile(path.join(reusedDir, '.agent-store.lock'),
+    JSON.stringify({ pid: holder.pid, sessionId: 'stale-session', image: 'electron.exe' }));
+  const reused = createAgentStore({ dataDir: reusedDir, identity: identities.alice });
+  assert.deepEqual(await reused.listTasks(), []);
+  const liveDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yuanyu-agent-lock-live-'));
+  t.after(() => fs.rm(liveDir, { recursive: true, force: true }));
+  await fs.writeFile(path.join(liveDir, '.agent-store.lock'),
+    JSON.stringify({ pid: holder.pid, sessionId: 'live-session', image: 'ping.exe' }));
+  const live = createAgentStore({ dataDir: liveDir, identity: identities.alice });
+  await assert.rejects(live.listTasks(), { code: 'AGENT_STORE_LOCKED' });
 });
 
 test('tasks, skill reuse and pin/delete stay isolated across people and companies; forged Mock identity fails', async (t) => {

@@ -1,8 +1,16 @@
 # 测试与回归报告
 
-日期：2026-11-13。状态：个人版/企业入口、推广服务、多模型选择、参数化及合成写入增强回归通过；M6 A阶段记忆、统一工具、预算与结果验证，B阶段有限反思与自我修正，以及C阶段可本机验证的生命周期能力已收敛为本机合成回归全绿；账号撤权端到端回归已补齐，真实模型/业务效果对照、生产与尚未开发部分按唯一清单保留。另记录记忆撤权与外发授权回归、全量验证、界面体验、本机演示测试账号、取消竞态修复、分支改名与推送前复核，不新增真实环境验收。
+日期：2026-11-16。状态：M7个人开源版范围调整已实施并验证——桌面版移除登录注册/推广额度/公司流程界面，自定义模型连接为唯一模型入口；工作区锁PID复用缺陷修复（曾导致启动白屏）。`npm test` 260/260通过（含4项锁映像复用回归），`npm run check` 123文件通过，`npm run test:desktop` 8/8阶段通过（desktop-smoke公司UI流程改为元素不存在断言+IPC层校验，product-ui-smoke重写为个人开源版断言，product-integration-smoke保留真实HTTP账号安全回归）。此前记录的M5/M6组件验证仍真实有效，仅桌面产品不再接入展示。真实模型/业务效果对照、生产与尚未开发部分按唯一清单保留。
 
 本报告只记录独立新项目，旧项目测试结果不迁移为本项目证据。输入均为隔离合成数据，无真实企业系统、OA身份、生产数据或收费模型调用。
+
+## 个人开源版范围调整与白屏修复（2026-11-16）
+
+- **白屏根因**：11-13遗留的工作区锁记录pid 2232，该PID已被`svchost`复用，`process.kill(pid,0)`误判"实例存活"，主进程初始化被`WORKSPACE_LOCKED`拒绝，渲染层无数据白屏。手动清除陈旧锁后恢复。
+- **锁修复**：`src/core/workspace.mjs`、`src/agent/store.mjs`、`src/model/profiles.mjs`、`src/memory/store.mjs`四处锁文件新增`image`（持有进程映像名）；Windows上pid存活时用`tasklist`比对映像名——被其他映像复用视为陈旧锁自动清除，同映像存活进程仍拒绝，无法核验时保守拒绝。新增四项回归测试（复用恢复/遗留锁恢复/同映像拒绝，win32专用缺ping跳过）：`test/core-workspace.test.mjs`、`test/agent-store.test.mjs`、`test/model-profiles.test.mjs`、`test/memory-store.test.mjs`。
+- **范围调整**（M7，详见PLAN）：`src/main.mjs`不再启动15334账号服务、不创建productClient；`src/ui/index.html`删除入口选择/注册/登录/邮箱验证/企业联系面板、公司导航与视图、账号与额度设置节、模型来源切换与推广模型行、开发者联系弹窗；`src/ui/app.js`同步清理全部对应代码路径（renderCompany、authenticate、renderProduct精简为锁定态处理、发布到公司按钮、推广文案），保留productLocked空安全以兼容账号宿主挂载与撤权锁定。
+- **桌面冒烟更新**：`scripts/desktop-smoke.mjs`公司UI流程改为"登录注册与公司流程元素不存在"断言+受控IPC层Mock发布校验+跨身份隔离断言；`scripts/product-ui-smoke.mjs`重写为无账号快照的个人流程断言（模型连接费用确认、合成写入、参数化、受控示范、无模型HTTPS重放恢复、撤权清理兼容、6档布局）；`scripts/product-integration-smoke.mjs`保留真实HTTP注册/验证/额度/撤权IPC安全回归。
+- **验证**：`npm test` 260/260（Node v24.14.1，无跳过）；`npm run check` 123文件；`npm run test:desktop` 8/8阶段退出码0。账号服务端、Mock公司共享IPC层、记忆撤权等既有安全回归全部保持通过。未触发任何真实模型或企业请求；本条不新增真实环境验收结论。
 
 ## 记忆撤权与选定记忆外发授权回归（2026-11-13）
 

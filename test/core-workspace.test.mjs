@@ -4,7 +4,7 @@ import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createWorkspace } from '../src/core/index.mjs';
 
 const systems = {
@@ -326,4 +326,32 @@ test('another live process cannot open a data directory, and restart converts ab
   assert.equal(snapshot.runs[0].error.code, 'INTERRUPTED');
   await assert.rejects(reopened.updateRun(child.stdout, { status: 'completed' }), { code: 'INVALID_TRANSITION' });
   assert.equal((await reopened.beginRun({ month: '2026-09' })).status, 'running');
+});
+
+test('陈旧工作区锁在PID被其他进程映像复用后自动恢复，同映像存活进程仍拒绝', async (t) => {
+  if (process.platform !== 'win32') return t.skip('映像名校验仅在Windows平台实现');
+  if (spawnSync('ping', ['-n', '1', '127.0.0.1'], { encoding: 'utf8' }).error) return t.skip('缺少ping工具');
+  const holder = spawn('ping', ['-n', '60', '127.0.0.1'], { stdio: 'ignore' });
+  t.after(() => { try { holder.kill(); } catch { /* already exited */ } });
+  assert.ok(holder.pid && holder.pid !== process.pid);
+  // 场景1：旧格式锁记录的PID已被ping复用（锁声明electron.exe）→ 视为陈旧并自动恢复。
+  const reusedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yuanyu-core-lock-reuse-'));
+  t.after(() => fs.rm(reusedDir, { recursive: true, force: true }));
+  await fs.writeFile(path.join(reusedDir, '.workspace.lock'),
+    JSON.stringify({ pid: holder.pid, sessionId: 'stale-session', image: 'electron.exe' }));
+  const reused = createWorkspace({ dataDir: reusedDir, systems, identity: identities.alice });
+  assert.ok(Array.isArray((await reused.snapshot()).runs));
+  // 场景2：无image字段的遗留锁同样按当前进程映像比对，仍被复用时自动恢复。
+  const legacyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yuanyu-core-lock-legacy-'));
+  t.after(() => fs.rm(legacyDir, { recursive: true, force: true }));
+  await fs.writeFile(path.join(legacyDir, '.workspace.lock'), JSON.stringify({ pid: holder.pid }));
+  const legacy = createWorkspace({ dataDir: legacyDir, systems, identity: identities.alice });
+  assert.ok(Array.isArray((await legacy.snapshot()).runs));
+  // 场景3：存活进程映像与锁记录一致时仍须拒绝，不得抢锁。
+  const liveDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yuanyu-core-lock-live-'));
+  t.after(() => fs.rm(liveDir, { recursive: true, force: true }));
+  await fs.writeFile(path.join(liveDir, '.workspace.lock'),
+    JSON.stringify({ pid: holder.pid, sessionId: 'live-session', image: 'ping.exe' }));
+  const live = createWorkspace({ dataDir: liveDir, systems, identity: identities.alice });
+  await assert.rejects(live.snapshot(), { code: 'WORKSPACE_LOCKED' });
 });

@@ -1,19 +1,19 @@
 import {createMemoryUI} from './memory-ui.js';
-import {demoAccountFor,demoSystemCredentialFor} from './demo-account.mjs';
+import {demoSystemCredentialFor} from './demo-account.mjs';
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const SYSTEMS = [
   { id: 'procurement', label: 'Mock 采购订单', description: '采购订单 · 已审核记录', symbol: '▤' },
   { id: 'warehouse', label: 'Mock 仓储入库', description: '仓储入库 · 到货记录', symbol: '▥' },
 ];
-const VIEW_NAMES = { workspace: '新任务', history: '任务历史', workflows: '工作流', accounts: '系统与账号', company: '公司流程', settings: '设置', memory:'个人记忆' };
+const VIEW_NAMES = { workspace: '新任务', history: '任务历史', workflows: '工作流', accounts: '系统与账号', settings: '设置', memory:'个人记忆' };
 const STATUS = { running: '执行中', awaiting_user: '等待你操作', awaiting_review:'待核对结果', interrupted: '已中断', completed: '已完成', failed: '未完成', cancelled: '已取消', pending: '等待执行', queued: '等待执行' };
 const state = {
   snapshot: { identity: null, credentials: [], workflows: [], runs: [], shared: [] },
   view: 'workspace', filter: 'all', plan: null, actionPending: false, planning: false,
   switching: false, switchTarget: null, activeRunId: null, connected: false,
   expandedSteps: new Set(), request: '', plannerMode: 'preset', modelConsent: false, pageConsent: false, selectedSiteIds: [], agentSitesChosen: false,
-  entryPanel: 'choices', authTab: 'register', authPending: false, demoVerificationCode: '', modelTestResult: '', writePreview: null, demonstrationSiteIds: [],
+  modelTestResult: '', writePreview: null, demonstrationSiteIds: [],
 };
 let toastTimer;
 let confirmCallback;
@@ -58,31 +58,10 @@ function product() { return state.snapshot.product || null; }
 function productLocked() { return Boolean(product() && !product().authenticated); }
 function companyReadOnly() { return Boolean(product() && (product().mode === 'personal' || product().companyWorkflows?.readOnly)); }
 function companyWorkflow(workflow) { return workflow.source?.kind === 'company-template' || workflow.importedFrom || workflow.publicationId; }
-function sponsoredOpen() {
-  const current = product();
-  if (!current) return true;
-  const monthly = current.limits?.monthlyTokens ?? current.usage?.monthlyTokens;
-  const daily = current.limits?.dailyRequests ?? current.usage?.dailyRequests;
-  return current.limits?.configured !== false && current.promotionBudget?.configured !== false && Number.isFinite(monthly) && monthly > 0 && Number.isFinite(daily) && daily > 0;
-}
-function quotaMessage() {
-  const current = product();
-  if (!current) return '';
-  if (!sponsoredOpen()) return '推广额度尚未开放，由开发者配置后启用。可使用自己的 API，不扣开发者额度。';
-  if (current.account && !current.account.verified) return '验证邮箱后即可使用推广额度。自己的 API 由提供方计费，不扣开发者额度。';
-  const usage = current.usage;
-  if (usage && usage.remainingTokens <= 0) return '本月推广额度已用完或已预留，恢复可用额度后可继续；也可切换自己的 API。';
-  if (usage && usage.dailyRequestsUsed >= usage.dailyRequests) return '今日推广请求次数已用完，次日恢复后可继续；也可切换自己的 API。';
-  return current.deployment === 'local_demo' ? '本机合成演示额度，非推广承诺。' : current.modelSource === 'byok' ? '使用自己的 API 不扣开发者额度；提供方费用由该 API 账号承担。' : '用量以服务实际记录为准，预留额度不代表已产生费用。';
-}
-function publications() {
-  const shared = state.snapshot.shared;
-  return Array.isArray(shared) ? shared : list(shared?.publications || shared?.items || shared?.available);
-}
 function runTime(run) { return Date.parse(run.createdAt || run.startedAt || run.updatedAt || '') || 0; }
 function runs() { return [...list(state.snapshot.runs)].sort((a, b) => runTime(b) - runTime(a)); }
 function isRunning() { return Boolean(state.snapshot.busy || runs().some((run) => run.status === 'running') || agentTasks().some((task) => ['running', 'awaiting_user'].includes(task.status))); }
-function isLocked() { return productLocked() || state.authPending || state.actionPending || state.switching || isRunning(); }
+function isLocked() { return productLocked() || state.actionPending || state.switching || isRunning(); }
 function credentialFor(systemId) { return credentials().find((credential) => credential.systemId === systemId || credential.id === systemId); }
 function hasCredentials() { return SYSTEMS.every((system) => { const credential = credentialFor(system.id); return credential && !credential.needsRebind; }); }
 function workflowName(workflow) { return workflow?.name || '采购与入库月报资料'; }
@@ -135,8 +114,8 @@ function acceptSnapshot(snapshot) {
 
 function clearAccountView() {
   memoryUI.reset();
-  state.entryPanel = 'choices'; state.demoVerificationCode = ''; state.modelTestResult = ''; state.writePreview = null; state.plan = null; state.activeRunId = null; state.request = ''; state.modelConsent = false; state.pageConsent = false; state.selectedSiteIds = []; state.agentSitesChosen = false; state.demonstrationSiteIds = []; state.expandedSteps.clear();
-  for (const selector of ['#task-form', '#credential-form', '#model-profile-form', '#product-auth-form', '#entry-verify-form', '#settings-verify-form', '#save-workflow-form', '#edit-workflow-form', '#write-demo-form', '#agent-edit-form', '#agent-run-form', '#demonstration-form']) $(selector).reset();
+  state.modelTestResult = ''; state.writePreview = null; state.plan = null; state.activeRunId = null; state.request = ''; state.modelConsent = false; state.pageConsent = false; state.selectedSiteIds = []; state.agentSitesChosen = false; state.demonstrationSiteIds = []; state.expandedSteps.clear();
+  for (const selector of ['#task-form', '#credential-form', '#model-profile-form', '#save-workflow-form', '#edit-workflow-form', '#write-demo-form', '#agent-edit-form', '#agent-run-form', '#demonstration-form']) $(selector).reset();
   for (const dialog of $$('dialog')) if (dialog.open) dialog.close();
   confirmCallback = undefined;
   $('#toast').hidden = true;
@@ -396,7 +375,7 @@ function renderDemonstration(task) {
   box.dataset.taskId = task.id;
   const view = state.snapshot.demonstration;
   if (!view || view.taskId !== task.id) return append(box, element('p', 'form-note', '示范记录当前不可操作。请取消后重新开始，不复用上次页面引用。'));
-  const locked = state.actionPending || state.authPending || state.switching || productLocked() || view.operationPending;
+  const locked = state.actionPending || state.switching || productLocked() || view.operationPending;
   const page = view.page;
   const siteId = view.currentSiteId || view.siteIds?.[0];
   const sites = element('select', 'text-input demonstration-site');
@@ -588,9 +567,8 @@ function workflowCard(workflow) {
   if (workflow.verified) tags.append(element('span', 'tag verified', '✓ 已验证运行'));
   else tags.append(element('span', 'tag', '待运行验证'));
   if (workflow.enabled === false) tags.append(element('span', 'tag disabled', '已停用'));
-  if (workflow.source?.kind === 'company-template' || workflow.importedFrom || workflow.publicationId) tags.append(element('span', 'tag', '公司模板副本'));
   card.append(tags);
-  const footer = append(element('div', 'workflow-card-footer'), button('运行流程  ↗', 'button primary small', () => openRunDialog(workflow), { disabled: isLocked() || workflow.enabled === false || (companyReadOnly() && companyWorkflow(workflow)) }), button('编辑', 'text-button', () => openEditWorkflow(workflow), { disabled: isLocked() }), button('版本历史', 'text-button', () => openWorkflowVersions(workflow), { disabled: state.actionPending }), button('发布到公司', 'text-button', () => confirmAction('发布流程模板', `将“${workflowName(workflow)}”的脱敏步骤和参数发布到当前 Mock 公司目录。不会发布账号、业务记录或结果文件。`, '确认发布', () => mutation('workflow.publish', { id: workflow.id }, '模板已发布到当前 Mock 公司目录。'), false), { disabled: state.actionPending || companyReadOnly() || workflow.enabled === false || !workflow.verified }), button(workflow.enabled === false ? '启用' : '停用', 'text-button', () => mutation('workflow.enabled', { id: workflow.id, enabled: workflow.enabled === false, expectedVersion: workflow.version }, workflow.enabled === false ? '流程已启用，请重新运行验证。' : '流程已停用并撤回发布。'), { disabled: isLocked() }), button('删除', 'text-button danger-text', () => confirmAction('删除个人工作流', `删除“${workflowName(workflow)}”？此操作不会删除已生成的本机文件。`, '删除流程', () => mutation('workflow.delete', { id: workflow.id }, '工作流已删除。')), { disabled: isLocked() }));
+  const footer = append(element('div', 'workflow-card-footer'), button('运行流程  ↗', 'button primary small', () => openRunDialog(workflow), { disabled: isLocked() || workflow.enabled === false || (companyReadOnly() && companyWorkflow(workflow)) }), button('编辑', 'text-button', () => openEditWorkflow(workflow), { disabled: isLocked() }), button('版本历史', 'text-button', () => openWorkflowVersions(workflow), { disabled: state.actionPending }), button(workflow.enabled === false ? '启用' : '停用', 'text-button', () => mutation('workflow.enabled', { id: workflow.id, enabled: workflow.enabled === false, expectedVersion: workflow.version }, workflow.enabled === false ? '流程已启用，请重新运行验证。' : '流程已停用并撤回发布。'), { disabled: isLocked() }), button('删除', 'text-button danger-text', () => confirmAction('删除个人工作流', `删除“${workflowName(workflow)}”？此操作不会删除已生成的本机文件。`, '删除流程', () => mutation('workflow.delete', { id: workflow.id }, '工作流已删除。')), { disabled: isLocked() }));
   card.append(footer);
   return card;
 }
@@ -635,38 +613,6 @@ function renderAccounts() {
   }
 }
 
-function renderCompany() {
-  const all = publications();
-  const identity = currentIdentity();
-  const readOnly = companyReadOnly();
-  $('#company-access-description').textContent = readOnly ? '这里只展示公开的合成流程示例，不包含未授权公司的资料。个人账号可浏览；导入、运行和发布需要企业接入。' : '当前为本机 Mock 公司目录，仅含脱敏模板。真实企业身份与跨电脑共享尚未接入。';
-  $('#company-enterprise-access').hidden = !readOnly;
-  $('#view-company .page-description').textContent = readOnly ? '浏览流程模板，了解可复用的方法。' : '导入同事发布的方法，使用自己的系统账号运行。';
-  $('#company-title .mock-tiny').textContent = readOnly ? '只读' : 'Mock';
-  $('#company-name').textContent = readOnly ? '个人版 · 仅浏览' : identity.companyId || 'Mock 公司';
-  $('#publication-count').textContent = `${all.length} 个模板`;
-  const target = $('#company-list');
-  target.replaceChildren();
-  if (!all.length) {
-    if (readOnly) {
-      target.append(emptyState('♧', '公司流程目录', '可查看的示例或授权模板会出现在这里。企业流程使用权限请联系开发者。', button('联系开发者', 'button secondary', showDeveloperContact)));
-      return;
-    }
-    target.append(emptyState('♧', '公司的好方法，会在这里相遇', '发布一个已跑通的个人工作流，同公司 Mock 身份即可导入。其他公司的身份看不到这些模板。', button('查看我的工作流', 'button secondary', () => navigate('workflows', true))));
-    return;
-  }
-  for (const publication of all) {
-    const card = element('article', 'workflow-card');
-    const author = publication.publisher?.displayName || publication.authorName || publication.authorId || publication.publisherId || '同公司成员';
-    const title = append(element('div', 'workflow-card-title'), element('h3', '', publication.name || publication.template?.name || '采购与入库月报模板'), element('p', '', `${author} 发布 · v${publication.version || publication.template?.version || 1}`));
-    append(card, append(element('div', 'workflow-card-head'), element('span', 'flow-icon', '♧'), title), element('p', 'workflow-description', readOnly ? publication.description || '示例展示采购与入库资料的关联方法。个人版仅供阅读，不能导入或执行。' : '复用采购与入库关联的步骤与参数。导入后使用自己的系统账号，生成自己的资料文件。'), append(element('div', 'workflow-tags'), element('span', 'tag', readOnly ? '公开合成示例' : '公司内部 Mock'), element('span', 'tag', '仅脱敏模板')));
-    const footer = append(element('div', 'workflow-card-footer'), button(readOnly ? '企业接入后可导入' : '导入到我的工作流', 'button primary small', () => mutation('workflow.import', { publicationId: publication.id }, '已导入个人副本，请使用自己的系统账号运行。'), { disabled: readOnly || state.actionPending }));
-    if ((publication.publisher?.userId || publication.authorId || publication.publisherId) === identity.userId) footer.append(button('撤回发布', 'text-button danger-text', () => confirmAction('撤回公司模板', '撤回后，此模板将从当前公司目录移除。已导入的个人副本按系统规则保留。', '撤回发布', () => mutation('workflow.revoke', { id: publication.id }, '已撤回公司目录中的模板。')), { disabled: readOnly || state.actionPending }));
-    card.append(footer);
-    target.append(card);
-  }
-}
-
 function renderSites() {
   const target = $('#controlled-site-list');
   target.replaceChildren();
@@ -694,8 +640,8 @@ function renderModel() {
   const ready = model.status === 'ready';
   const labels = { not_configured: '未配置', disabled: '已停用', ready: '已配置', invalid: '配置无效' };
   $('#model-status').textContent = labels[model.status] || '未配置';
-  $('#model-status-title').textContent = ready ? (model.model || '兼容接口模型') : product() ? '选择工作模型' : '预设 Mock 规划';
-  $('#model-status-description').textContent = ready ? `${model.host || '所选服务'} · 保存配置不代表连接已通过测试。仅在你逐次同意后发送允许范围内的数据。` : product() ? '在下方选择模型来源或添加自己的 API 配置。合成演示可独立使用。' : '可在仓库外的本机文件中配置兼容接口；未配置时使用预设任务识别器。';
+  $('#model-status-title').textContent = ready ? (model.model || '兼容接口模型') : '模型连接';
+  $('#model-status-description').textContent = ready ? `${model.host || '所选服务'} · 保存配置不代表连接已通过测试。仅在你逐次同意后发送允许范围内的数据。` : '在下方添加自己的模型 API（含自定义兼容接口）。未配置时使用预设任务识别器。';
   $('#model-config-note').textContent = '密钥来自你指定的本机文件，界面不展示；仅在逐次同意调用时由主进程读取。';
   $('#model-mode-option').disabled = !ready;
   const browserReady = ready && model.dataScope === 'selected_pages';
@@ -717,7 +663,6 @@ function renderModel() {
   $('#task-month').required = !browserMode();
   $('#runtime-mode').textContent = { model: '模型采购规划', preset: '预设流程', mock_browser: '合成模型 · 浏览器', compatible_browser: '模型浏览器任务' }[state.plannerMode];
   $('#composer-hint').textContent = state.plannerMode === 'mock_browser' ? '合成模型只用于本机交互演示，不向外部发送页面。' : state.plannerMode === 'compatible_browser' ? '仅在所选站点内只读操作。登录和验证由你接管。' : '执行前会展示计划，由你确认。';
-  if (product()?.modelSource === 'sponsored' && ['model', 'compatible_browser'].includes(state.plannerMode)) $('#composer-hint').textContent += ` ${quotaMessage()}`;
   if (localReplay) { $('#runtime-mode').textContent = '本机只读重放'; $('#composer-hint').textContent = '按已确认的站点、流程版本和参数重放，不发送模型，不消耗推广额度。'; }
   $('#model-configure').disabled = state.actionPending;
   $('#model-refresh').disabled = state.actionPending;
@@ -727,80 +672,12 @@ function amount(value) {
   return Number.isFinite(value) ? new Intl.NumberFormat('zh-CN').format(value) : '—';
 }
 
-function showDeveloperContact() { $('#developer-contact-dialog').showModal(); }
-
-function prefillDemoAccount(force = false) {
-  const account = demoAccountFor(product()?.deployment);
-  if (!account) return;
-  for (const [selector, value] of [['#auth-email', account.email], ['#auth-name', account.name], ['#auth-password', account.password]]) {
-    const node = $(selector);
-    if (node && (force || !node.value)) node.value = value;
-  }
-}
-
 function renderProduct() {
-  const current = product();
+  // 个人开源版不接入账号服务；productLocked 仅在外部宿主挂载账号快照时保持界面锁定，避免误操作。
   const locked = productLocked();
   document.body.classList.toggle('product-locked', locked);
-  $('#product-entry').hidden = !locked;
-  $('#product-account-settings').hidden = !current;
-  $('#product-account-button').hidden = !current;
-  $('.identity-picker').hidden = Boolean(current);
   $('.app-shell').inert = locked;
-  $('.environment-pill').textContent = current ? (current.deployment === 'local_demo' ? '本机合成账户' : current.mode === 'enterprise' ? '企业版' : '个人版') : 'Mock 身份';
-  if (!current) return;
-  const demoAccount = demoAccountFor(current.deployment);
-  for (const selector of ['#demo-account-note', '#demo-account-fill']) $(selector).hidden = !demoAccount;
-  const local = current.deployment === 'local_demo';
-  const account = current.account || {};
-  const name = account.displayName || account.email || '个人账号';
-  $('#product-account-button').textContent = name;
-  $('#product-account-button').disabled = state.authPending;
-  $('.nav-item[data-view="company"] .mock-tiny').textContent = '只读';
-  $('.private-note .mock-tiny').textContent = local ? '合成演示' : '个人';
-  $('#settings-environment-title').textContent = local ? '本机合成演示' : '个人注册账号';
-  $('#settings-environment-description').textContent = local ? '当前为本机注册服务。业务站点、校验码和模型响应均为隔离合成数据。' : '注册身份与本机系统账号分别管理。业务系统权限始终由该系统决定。';
-  $('#product-account-name').textContent = name;
-  $('#product-account-email').textContent = account.email || '';
-  $('#product-account-status').textContent = account.verified ? '已验证' : '待验证';
-  $('#entry-environment').textContent = local ? '本机合成演示' : current.deployment === 'configured' ? '个人服务' : '服务待配置';
-  $('#entry-deployment-note').textContent = local ? '当前注册、邮箱验证和额度均为本机合成演示，不代表云端账号或真实云端配额。' : current.deployment === 'unconfigured' ? '开发者尚未配置注册服务；入口不会代替真实服务创建云端账号。' : '使用前请确认任务和页面的发送范围。';
-  $('#entry-personal-description').textContent = sponsoredOpen() ? `注册后免费使用，每日 ${amount(current.limits?.dailyRequests ?? current.usage?.dailyRequests)} 次模型请求、每月 ${amount(current.limits?.monthlyTokens ?? current.usage?.monthlyTokens)} tokens；也可接入自己的 API。` : '注册个人账号，管理工作流并接入自己的 API。推广额度开放后可免费领取。';
-  $('#entry-choices').hidden = state.entryPanel !== 'choices';
-  $('#entry-auth-panel').hidden = state.entryPanel !== 'auth';
-  $('#entry-verify-panel').hidden = state.entryPanel !== 'verify';
-  $('#entry-enterprise-panel').hidden = state.entryPanel !== 'enterprise';
-  $('#entry-auth-title').textContent = state.authTab === 'register' ? '创建个人账号' : '登录个人账号';
-  $('#auth-name-field').hidden = state.authTab !== 'register';
-  $('#auth-name').required = state.authTab === 'register';
-  $('#auth-password').autocomplete = state.authTab === 'register' ? 'new-password' : 'current-password';
-  $('#auth-submit').textContent = state.authPending ? '正在处理…' : state.authTab === 'register' ? '免费注册' : '登录';
-  $('#auth-submit').disabled = state.authPending || !state.connected;
-  $('#entry-verify-submit').disabled = state.authPending;
-  $('#settings-verify-submit').disabled = state.authPending;
-  $('#auth-logout').disabled = state.authPending || state.actionPending;
-  $$('[data-auth-tab]').forEach((node) => { node.classList.toggle('selected', node.dataset.authTab === state.authTab); node.disabled = state.authPending; });
-  const demoCode = local && state.demoVerificationCode ? `合成校验码：${state.demoVerificationCode}（仅本机演示，没有发送邮件）` : '';
-  for (const selector of ['#entry-demo-code', '#settings-demo-code']) { $(selector).textContent = demoCode; $(selector).hidden = !demoCode; }
-  $('#entry-verify-description').textContent = local ? '在本机合成演示中输入下方校验码。' : '请输入注册服务提供的邮箱校验码。';
-  $('#settings-verify-form').hidden = !current.authenticated || Boolean(account.verified);
-  const contact = current.developer?.contact;
-  $$('.developer-name').forEach((node) => { node.textContent = current.developer?.name || '开发者'; });
-  $$('.developer-contact-value').forEach((node) => { node.textContent = typeof contact === 'string' && contact.trim() ? `微信号：${contact}` : '开发者微信号待配置'; });
-  $$('.developer-contact-note').forEach((node) => { node.hidden = !(typeof contact === 'string' && contact.trim()); });
-  $$('[data-copy-developer]').forEach((node) => { node.disabled = !contact || state.actionPending; });
-  const usage = current.usage;
-  const usageNode = $('#product-usage');
-  usageNode.replaceChildren();
-  if (usage) {
-    for (const [label, value, detail] of [
-      ['本月剩余', amount(usage.remainingTokens), `总额度 ${amount(usage.monthlyTokens)} tokens`],
-      ['本月已用', amount(usage.usedTokens), `已预留 ${amount(usage.reservedTokens)} tokens`],
-      ['今日请求', `${amount(usage.dailyRequestsUsed)} / ${amount(usage.dailyRequests)}`, usage.month || '当前计费周期'],
-    ]) usageNode.append(append(element('div', 'usage-item'), element('span', '', label), element('strong', '', value), element('p', '', detail)));
-  } else usageNode.append(element('p', 'muted-text', '额度状态暂不可用。'));
-  $('#product-usage-note').textContent = quotaMessage();
-  $('#product-usage-note').classList.toggle('quota-exhausted', Boolean(usage && sponsoredOpen() && (usage.remainingTokens <= 0 || usage.dailyRequestsUsed >= usage.dailyRequests)));
+  $('.identity-picker').hidden = Boolean(product());
 }
 
 function renderWriteDemo() {
@@ -825,24 +702,8 @@ function renderWriteDemo() {
 
 function renderModelProfiles() {
   const catalog = state.snapshot.modelProfiles;
-  const current = product();
-  $('#model-source-settings').hidden = !current;
   $('#model-profiles-settings').hidden = !catalog;
   $('#model-local-config').hidden = Boolean(catalog);
-  if (current) {
-    $('#model-source-select').value = current.modelSource || 'sponsored';
-    $('#model-source-select').disabled = isLocked();
-    $('#model-source-select option[value="sponsored"]').textContent = sponsoredOpen() ? (current.deployment === 'local_demo' ? '合成演示额度模型' : '推广额度模型') : '推广额度模型（尚未开放）';
-    $('#model-source-select option[value="sponsored"]').disabled = !sponsoredOpen();
-    $('#model-source-description').textContent = current.modelSource === 'byok' ? '使用本人的 API；需要注册，不扣开发者额度。' : !sponsoredOpen() ? '推广额度尚未开放，由开发者配置后启用。' : current.deployment === 'local_demo' ? '本机合成演示额度，非推广承诺。' : '使用开发者提供的模型，受账号可用额度限制。';
-    const select = $('#sponsored-model-select');
-    select.replaceChildren();
-    for (const model of list(current.models)) { const option = element('option', '', model.label || model.id); option.value = model.id; select.append(option); }
-    if (!select.children.length) { const option = element('option', '', '开发者尚未提供可用模型'); option.value = ''; select.append(option); }
-    select.value = current.sponsoredModelId || select.firstElementChild?.value || '';
-    select.disabled = isLocked() || !sponsoredOpen() || !list(current.models).length;
-    $('#sponsored-model-row').hidden = current.modelSource !== 'sponsored';
-  }
   if (!catalog) return;
   const target = $('#model-profile-list');
   target.replaceChildren();
@@ -891,25 +752,6 @@ function openModelProfile(profile) {
   providerHelp();
   $('#model-profile-dialog').showModal();
   $('#model-profile-label').focus();
-}
-
-async function authenticate(action, payload, errorSelector) {
-  if (state.authPending || state.actionPending) { if (payload.password) payload.password = ''; return; }
-  state.authPending = true;
-  $(errorSelector).hidden = true;
-  renderProduct();
-  try {
-    const result = await invoke(action, payload);
-    if (payload.password) payload.password = '';
-    if (action === 'auth.register') state.entryPanel = 'verify';
-    if (action === 'auth.logout') clearAccountView();
-    await refresh();
-    if (product()?.deployment === 'local_demo' && result?.demoVerificationCode) state.demoVerificationCode = String(result.demoVerificationCode);
-    if (action === 'auth.verify') state.demoVerificationCode = '';
-    if (product()?.authenticated) navigate(product().account?.verified ? 'workspace' : 'settings');
-    if (action === 'auth.verify') toast('邮箱验证已完成。');
-  } catch (error) { $(errorSelector).textContent = error.message; $(errorSelector).hidden = false; if (action === 'auth.logout') toast(error.message, true); }
-  finally { if (payload.password) payload.password = ''; state.authPending = false; render(); }
 }
 
 function skillSiteIds(skill) {
@@ -1130,7 +972,6 @@ function render() {
   renderRuns();
   renderWorkflows();
   renderAccounts();
-  renderCompany();
   renderSites();
   renderModel();
   renderProduct();
@@ -1292,29 +1133,6 @@ async function switchIdentity(userId) {
   }
 }
 
-$('#entry-personal').addEventListener('click', () => { state.entryPanel = 'auth'; renderProduct(); prefillDemoAccount(); $('#auth-email').focus(); });
-$('#entry-enterprise').addEventListener('click', () => { state.entryPanel = 'enterprise'; renderProduct(); });
-$$('[data-entry-back]').forEach((node) => node.addEventListener('click', () => { state.entryPanel = 'choices'; $('#auth-password').value = ''; renderProduct(); }));
-$('#entry-back-login').addEventListener('click', () => { state.entryPanel = 'auth'; state.authTab = 'login'; renderProduct(); prefillDemoAccount(); });
-$$('[data-auth-tab]').forEach((node) => node.addEventListener('click', () => {
-  state.authTab = node.dataset.authTab; $('#auth-password').value = ''; $('#auth-error').hidden = true; renderProduct(); prefillDemoAccount();
-}));
-$('#demo-account-fill').addEventListener('click', () => { prefillDemoAccount(true); $('#auth-email').focus(); });
-$$('[data-contact-developer]').forEach((node) => node.addEventListener('click', showDeveloperContact));
-$$('[data-copy-developer]').forEach((node) => node.addEventListener('click', () => mutation('developer.contact.copy', {}, '开发者微信号已复制。')));
-$('.entry-brand').addEventListener('click', (event) => { event.preventDefault(); state.entryPanel = 'choices'; renderProduct(); });
-$('#product-account-button').addEventListener('click', () => navigate('settings', true));
-$('#product-auth-form').addEventListener('submit', (event) => {
-  event.preventDefault();
-  const payload = { email: $('#auth-email').value.trim(), password: $('#auth-password').value };
-  if (state.authTab === 'register') payload.name = $('#auth-name').value.trim();
-  $('#auth-password').value = '';
-  authenticate(state.authTab === 'register' ? 'auth.register' : 'auth.login', payload, '#auth-error');
-});
-for (const [form, input, error] of [['#entry-verify-form', '#entry-verification-code', '#entry-verify-error'], ['#settings-verify-form', '#settings-verification-code', '#settings-verify-error']]) {
-  $(form).addEventListener('submit', (event) => { event.preventDefault(); const code = $(input).value.trim(); $(input).value = ''; authenticate('auth.verify', { code }, error); });
-}
-$('#auth-logout').addEventListener('click', () => confirmAction('退出个人账号', isRunning() ? '退出会中止当前任务并关闭业务浏览器。确定退出？' : '退出后将关闭当前业务浏览器，保留本人的本机加密资料。', '退出登录', () => authenticate('auth.logout', {}, '#settings-verify-error'), false));
 $('#new-model-profile').addEventListener('click', () => openModelProfile());
 $('#model-profile-provider').addEventListener('change', () => {
   const provider = list(state.snapshot.modelProfiles?.providers).find((item) => item.id === $('#model-profile-provider').value);
@@ -1338,13 +1156,7 @@ $('#model-profile-form').addEventListener('submit', async (event) => {
   } catch (error) { $('#model-profile-error').textContent = error.message; $('#model-profile-error').hidden = false; }
   finally { delete payload.apiKey; state.actionPending = false; $('#model-profile-submit').disabled = false; render(); }
 });
-$('#model-source-select').addEventListener('change', (event) => {
-  state.modelTestResult = ''; const payload = { source: event.target.value };
-  if (payload.source === 'sponsored' && $('#sponsored-model-select').value) payload.modelId = $('#sponsored-model-select').value;
-  mutation('model.source', payload, '已切换模型来源。切换不会自动调用模型。');
-});
-$('#sponsored-model-select').addEventListener('change', (event) => { state.modelTestResult = ''; mutation('model.source', { source: 'sponsored', modelId: event.target.value }, '已选择服务模型。'); });
-$('#model-test').addEventListener('click', () => confirmAction('测试当前模型连接', product()?.modelSource === 'sponsored' ? '将向当前所选服务模型发出一次短请求，会占用服务额度。若服务连接真实模型，可能产生 API 费用。是否继续？' : '将使用当前 API 配置向模型发出一次短请求，可能产生提供方费用。只测试连接，不发送业务页面。是否继续？', '确认并测试', async () => {
+$('#model-test').addEventListener('click', () => confirmAction('测试当前模型连接', '将使用当前 API 配置向模型发出一次短请求，可能产生提供方费用。只测试连接，不发送业务页面。是否继续？', '确认并测试', async () => {
   if (isLocked()) return;
   state.actionPending = true; state.modelTestResult = '正在测试…'; render();
   try { const result = await invoke('model.test', { consent: true }); state.modelTestResult = result?.synthetic ? '本机合成服务连接成功，未验证真实大模型。' : '连接测试成功；实际任务质量仍需验证。'; }

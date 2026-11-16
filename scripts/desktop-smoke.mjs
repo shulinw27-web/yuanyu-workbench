@@ -109,16 +109,15 @@ export async function runDesktopSmoke({BrowserWindow,cryptoAdapter,systems,dataD
     await until(`document.querySelector('#task-plan').hidden && !document.querySelector('#plan-submit').disabled && document.querySelector('#active-run')?.textContent.includes(${JSON.stringify(uiResult.artifact.name)}) && [...document.querySelectorAll('#active-run button')].some(b=>b.textContent==='保存为工作流')`);
     await runUi(`[...document.querySelectorAll('#active-run button')].find(b=>b.textContent==='保存为工作流').click();document.querySelector('#workflow-name').value='界面回归月报';document.querySelector('#save-workflow-form').requestSubmit();`);
     await until(`!document.querySelector('#save-dialog').open && document.querySelector('#quick-workflows').textContent.includes('界面回归月报')`);
-    await runUi(`document.querySelector('[data-view="workflows"]').click();const card=[...document.querySelectorAll('#workflow-list article')].find(c=>c.querySelector('h3').textContent==='界面回归月报');[...card.querySelectorAll('button')].find(b=>b.textContent==='发布到公司').click();document.querySelector('#confirm-action').click();`);
-    await until(`!document.querySelector('#confirm-dialog').open && !document.querySelector('#identity-select').disabled`);
-    assert.ok((await uiController.snapshot()).shared.some(p=>p.template.name==='界面回归月报'));
-    await runUi(`document.querySelector('[data-view="company"]').click()`);
-    await until(`[...document.querySelectorAll('#company-list button')].some(b=>b.textContent==='撤回发布')`);
+    // 个人开源版：公司流程与登录注册入口必须从界面移除；Mock共享能力仅保留在受控IPC层。
+    await until(`!document.querySelector('[data-view="company"]') && !document.querySelector('#view-company') && !document.querySelector('#product-entry') && !document.querySelector('#model-source-settings') && !document.querySelector('#product-account-settings')`);
+    await uiController.invoke('workflow.publish',{id:(await uiController.snapshot()).workflows.find(w=>w.name==='界面回归月报').id});
+    assert.ok((await uiController.snapshot()).shared.some(p=>p.template.name==='界面回归月报'),'受控IPC层Mock发布仍可用');
     await runUi(`const picker=document.querySelector('#identity-select');picker.value='bob';picker.dispatchEvent(new Event('change',{bubbles:true}));`);
     await until(`document.querySelector('#identity-avatar').textContent==='陈' && !document.querySelector('#identity-select').disabled`);
-    await runUi(`document.querySelector('[data-view="company"]').click();const card=[...document.querySelectorAll('#company-list article')].find(c=>c.querySelector('h3').textContent==='界面回归月报');[...card.querySelectorAll('button')].find(b=>b.textContent==='导入到我的工作流').click();`);
-    await until(`!document.querySelector('#identity-select').disabled && document.querySelector('#toast').textContent.includes('已导入')`);
-    assert.ok((await uiController.snapshot()).workflows.some(w=>w.name==='界面回归月报'));
+    assert.ok((await uiController.snapshot()).workflows.every(w=>w.name!=='界面回归月报'),'跨身份工作流必须隔离');
+    await runUi(`const picker=document.querySelector('#identity-select');picker.value='alice';picker.dispatchEvent(new Event('change',{bubbles:true}));`);
+    await until(`document.querySelector('#identity-avatar').textContent==='林' && !document.querySelector('#identity-select').disabled`);
     await runUi(`const picker=document.querySelector('#identity-select');picker.value='alice';picker.dispatchEvent(new Event('change',{bubbles:true}));`);
     await until(`document.querySelector('#identity-avatar').textContent==='林' && !document.querySelector('#identity-select').disabled`);
     await runUi(`document.querySelector('[data-view="workspace"]').click();const card=[...document.querySelectorAll('#quick-workflows article')].find(c=>c.querySelector('h3')?.textContent==='界面回归月报');card.querySelector('button').click();document.querySelector('#workflow-month').value='2026-09';document.querySelector('#workflow-run-form').requestSubmit();`);
@@ -165,7 +164,7 @@ export async function runDesktopSmoke({BrowserWindow,cryptoAdapter,systems,dataD
     await runUi(`document.querySelector('#theme-select').value='light';document.querySelector('#theme-select').dispatchEvent(new Event('change'));`);
     ui.setSize(1366,768);await new Promise(r=>setTimeout(r,100));assert.ok(await ui.webContents.executeJavaScript(`document.documentElement.scrollWidth<=innerWidth+2`));
     await writeFile(join(root,'output','screenshots','workbench-1366-light.png'),(await ui.webContents.capturePage()).toPNG());
-    console.log('PASS UI：真实页面计划确认→执行→文件→保存→发布→同事导入→首页换月复用；隔离preload、1440和1024宽度无水平溢出；截图已保存。');
-    console.log('PASS UI增强：编辑v2→停用v3→启用v4→恢复v5、撤旧发布、站点注册、模型未配置禁用、深浅主题及1920/1366布局。');
+    console.log('PASS UI：真实页面计划确认→执行→文件→保存→IPC发布校验→身份隔离→首页换月复用；隔离preload、1440和1024宽度无水平溢出；截图已保存。');
+    console.log('PASS UI增强：编辑v2→停用v3→启用v4→恢复v5、撤旧发布、站点注册、模型未配置禁用、深浅主题及1920/1366布局；登录注册与公司流程入口已按个人开源版移除。');
   } finally {ipcMain.removeHandler('workbench:invoke');await uiController.close();ui.destroy();}
 }

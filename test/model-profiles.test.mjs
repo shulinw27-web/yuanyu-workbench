@@ -4,7 +4,7 @@ import {mkdtemp,rm,readFile,writeFile,mkdir,symlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createCipheriv,createDecipheriv,randomBytes} from 'node:crypto';
-import {execFile} from 'node:child_process';
+import {execFile,spawn,spawnSync} from 'node:child_process';
 import {promisify} from 'node:util';
 import {pathToFileURL} from 'node:url';
 import {createModelProfiles,PROVIDERS} from '../src/model/profiles.mjs';
@@ -72,6 +72,22 @@ test('不可用加密拒绝保存和请求；并发保存串行落盘，无活�
   const result=await promisify(execFile)(process.execPath,['--input-type=module','-e',`import {createModelProfiles} from ${JSON.stringify(moduleUrl)}; try{await createModelProfiles({dataDir:${JSON.stringify(f.dataDir)},identity:{companyId:'mock-acme',userId:'alice'}}).list();process.exitCode=2;}catch(error){process.stdout.write(error.code);}`]);assert.equal(result.stdout,'MODEL_PROFILE_LOCKED');
   const linked=await mkdtemp(join(tmpdir(),'yuanyu-model-link-'));t.after(()=>rm(linked,{recursive:true,force:true}));await mkdir(join(linked,'model-profiles'),{recursive:true});await symlink(join(f.dataDir,'model-profiles','mock-acme'),join(linked,'model-profiles','mock-acme'),'junction');
   await assert.rejects(createModelProfiles({dataDir:linked,identity:alice,cryptoAdapter:f.cryptoAdapter}).list(),/MODEL_PROFILE_UNSAFE_PATH/);
+});
+
+test('陈旧模型配置锁在PID被其他进程映像复用后自动恢复，同映像存活进程仍拒绝',async t=>{
+  if(process.platform!=='win32')return t.skip('映像名校验仅在Windows平台实现');
+  if(spawnSync('ping',['-n','1','127.0.0.1'],{encoding:'utf8'}).error)return t.skip('缺少ping工具');
+  const holder=spawn('ping',['-n','60','127.0.0.1'],{stdio:'ignore'});
+  t.after(()=>{try{holder.kill();}catch{/* already exited */}});
+  assert.ok(holder.pid&&holder.pid!==process.pid);
+  const reusedDir=await mkdtemp(join(tmpdir(),'yuanyu-model-lock-reuse-'));t.after(()=>rm(reusedDir,{recursive:true,force:true}));
+  await writeFile(join(reusedDir,'.model-profiles.lock'),JSON.stringify({pid:holder.pid,image:'electron.exe'}));
+  const f=await fixture(t);
+  const reused=createModelProfiles({dataDir:reusedDir,identity:alice,cryptoAdapter:f.cryptoAdapter});
+  await reused.save(makeInput());assert.equal((await reused.list()).profiles.length,1);
+  const liveDir=await mkdtemp(join(tmpdir(),'yuanyu-model-lock-live-'));t.after(()=>rm(liveDir,{recursive:true,force:true}));
+  await writeFile(join(liveDir,'.model-profiles.lock'),JSON.stringify({pid:holder.pid,image:'ping.exe'}));
+  await assert.rejects(createModelProfiles({dataDir:liveDir,identity:alice,cryptoAdapter:f.cryptoAdapter}).list(),/MODEL_PROFILE_LOCKED/);
 });
 
 test('保存/选择/状态不联网；浏览器网关只在双授权请求中解密，配置切换拒绝迟到结果',async t=>{

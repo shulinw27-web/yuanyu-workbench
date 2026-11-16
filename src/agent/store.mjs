@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID,createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import {isAccountIdentity} from '../product/client.mjs';
 import {validateTaskBudget,claimTaskBudget,beginBudgetLease,finishBudgetLease} from './budget.mjs';
 
@@ -268,6 +269,24 @@ function rootFor(dataDir) {
   if (!ROOTS.has(key)) ROOTS.set(key, { directory: resolved, sessionId: randomUUID(), tail: Promise.resolve(), ready: undefined });
   return ROOTS.get(key);
 }
+function lockHolderImage(pid) {
+  try {
+    const listing = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', timeout: 5000 });
+    return listing.stdout?.trim().split(/\r?\n/)[0]?.match(/^"([^"]+)"/)?.[1]?.toLowerCase() ?? '';
+  } catch { return ''; }
+}
+
+/** 存活校验：pid 存活时在 Windows 上比对映像名，防止退出进程的 PID 被系统进程复用造成永久假锁。 */
+async function holderAlive(lock) {
+  let alive = true;
+  try { process.kill(lock.pid, 0); } catch (error) { if (error.code === 'ESRCH') alive = false; }
+  if (!alive) return false;
+  if (process.platform !== 'win32') return true;
+  const expected = (typeof lock.image === 'string' && lock.image.trim() !== ''
+    ? lock.image : path.basename(process.execPath)).toLowerCase();
+  const observed = lockHolderImage(lock.pid);
+  return observed === '' || observed === expected;
+}
 async function initialize(root) {
   await directory(root.directory);
   root.directory = await fs.realpath(root.directory);
@@ -276,14 +295,12 @@ async function initialize(root) {
   const existing = await readJSON(lockPath);
   if (existing) {
     assert(Number.isSafeInteger(existing.pid) && existing.pid > 0, 'AGENT_STORE_LOCKED', '任务存储锁无效。');
-    let alive = true;
-    try { process.kill(existing.pid, 0); } catch (error) { if (error.code === 'ESRCH') alive = false; }
-    assert(!alive, 'AGENT_STORE_LOCKED', '任务存储正由其他进程使用。');
+    assert(!await holderAlive(existing), 'AGENT_STORE_LOCKED', '任务存储正由其他进程使用。');
     await fs.rm(lockPath);
   }
   try {
     const handle = await fs.open(lockPath, 'wx', 0o600);
-    try { await handle.writeFile(JSON.stringify({ pid: process.pid, sessionId: root.sessionId })); }
+    try { await handle.writeFile(JSON.stringify({ pid: process.pid, sessionId: root.sessionId, image: path.basename(process.execPath) })); }
     finally { await handle.close(); }
   } catch (error) {
     if (error.code === 'EEXIST') fail('AGENT_STORE_LOCKED', '任务存储正由其他进程使用。');

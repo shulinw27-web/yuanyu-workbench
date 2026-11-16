@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -154,6 +155,25 @@ async function atomicJSON(filename, value) {
   }
 }
 
+function lockHolderImage(pid) {
+  try {
+    const listing = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', timeout: 5000 });
+    return listing.stdout?.trim().split(/\r?\n/)[0]?.match(/^"([^"]+)"/)?.[1]?.toLowerCase() ?? '';
+  } catch { return ''; }
+}
+
+/** 存活校验：pid 存活时在 Windows 上比对映像名，防止退出进程的 PID 被系统进程复用造成永久假锁。 */
+async function holderAlive(lock) {
+  let alive = true;
+  try { process.kill(lock.pid, 0); } catch (error) { if (error.code === 'ESRCH') alive = false; }
+  if (!alive) return false;
+  if (process.platform !== 'win32') return true;
+  const expected = (typeof lock.image === 'string' && lock.image.trim() !== ''
+    ? lock.image : path.basename(process.execPath)).toLowerCase();
+  const observed = lockHolderImage(lock.pid);
+  return observed === '' || observed === expected;
+}
+
 async function initializeRoot(root) {
   await ensureDirectory(root.directory);
   root.directory = await fs.realpath(root.directory);
@@ -163,13 +183,11 @@ async function initializeRoot(root) {
     const existing = await readJSON(lockPath);
     if (existing) {
       assert(Number.isInteger(existing.pid) && existing.pid > 0, 'WORKSPACE_LOCKED', '工作区锁无法验证。');
-      let alive = true;
-      try { process.kill(existing.pid, 0); } catch (error) { if (error.code === 'ESRCH') alive = false; }
-      assert(!alive, 'WORKSPACE_LOCKED', '此工作区已由其他实例打开。');
+      assert(!await holderAlive(existing), 'WORKSPACE_LOCKED', '此工作区已由其他实例打开。');
       await fs.rm(lockPath);
     }
     const lock = await fs.open(lockPath, 'wx', 0o600);
-    await lock.writeFile(JSON.stringify({ pid: process.pid, sessionId: root.sessionId }));
+    await lock.writeFile(JSON.stringify({ pid: process.pid, sessionId: root.sessionId, image: path.basename(process.execPath) }));
     await lock.close();
   } catch (error) {
     if (error.code === 'EEXIST') throw failure('WORKSPACE_LOCKED', '此工作区已由其他实例打开。');
