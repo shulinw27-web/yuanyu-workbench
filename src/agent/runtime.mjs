@@ -169,7 +169,7 @@ export function createAgentRuntime({store,getSites,getBrowser,isCurrent,authoriz
           if(verification?.status==='rejected')throw fail(verification.code);
           await finalizeReflections(verification);
           const verificationPatch=verification?{status:verification.status,code:verification.code??(verification.status==='verified'?'RESULT_VERIFIED':'USER_RESULT_REVIEW_REQUIRED'),evidenceIds:verification.evidenceIds??[]}:undefined;
-          await update({status,steps,trace,reflections:[...reflections],message:result.message.slice(0,2000),...(verificationPatch?{verification:verificationPatch}:{}),...(status==='awaiting_user'?{awaitingSiteId:result.siteId}:{})});
+          await update({status,steps,trace,reflections:[...reflections],message:result.message.slice(0,2000),...(verificationPatch?{verification:verificationPatch}:{}),...(status==='awaiting_user'?{awaitingSiteId:result.siteId}:{}),...(result.usage!==undefined?{usage:result.usage}:{}),...(result.promptVersion!==undefined?{promptVersion:result.promptVersion}:{}),...(result.compactions!==undefined?{compactions:result.compactions}:{})});
           if(['completed','awaiting_review'].includes(status)&&await context())await onTaskMemory({task:await lookup(task.id,store.listTasks),result:{status,code:verificationPatch?.code,stepCount:steps.length},...(result.reflection?{reflection:structuredClone(result.reflection)}:{})});
         }catch(error){
           await finalizeReflections(null).catch(()=>{});

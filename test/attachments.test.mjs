@@ -79,7 +79,8 @@ test('浏览器模型接受首个用户消息的多模态parts并原样发送，
     },
   });
   const result = await request({ messages: [systemMessage, partsMessage], tools: browserTools });
-  assert.equal(result.content, '仅已读取的合成记录符合条件。');
+  assert.equal(result.message.content, '仅已读取的合成记录符合条件。');
+  assert.equal(result.usage, null);
   const laterArray = { role: 'user', content: [{ type: 'text', text: '补充说明' }] };
   await assert.rejects(request({ messages: [systemMessage, { role: 'user', content: '开始' }, laterArray], tools: browserTools }), /MODEL_INPUT_INVALID/);
   await assert.rejects(request({ messages: [systemMessage, { role: 'user', content: [{ type: 'video_url', video_url: { url: 'data:video/mp4;base64,AAAA' } }] }], tools: browserTools }), /MODEL_INPUT_INVALID/);

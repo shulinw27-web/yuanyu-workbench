@@ -85,6 +85,13 @@ async function compatibleRequest({profile,apiKey,body,fetchImpl,signal,beforeSen
   }catch(error){if(controller.signal.aborted)throw fail(signal?.aborted?'CANCELLED':'MODEL_TIMEOUT');if(typeof error.code==='string'&&/^MODEL_[A-Z_]+$/.test(error.code))throw fail(error.code);throw fail('MODEL_UNAVAILABLE');}
   finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
 }
+/** Provider usage is passed through honestly: standard prompt/completion token fields map directly; cache fields are provider-specific and stay null when unreported. */
+function parseUsage(raw){
+  if(raw===undefined||raw===null)return null;
+  if(!plain(raw))return null;
+  const count=value=>Number.isSafeInteger(value)&&value>=0?value:null;
+  return {promptTokens:count(raw.prompt_tokens),completionTokens:count(raw.completion_tokens),cachedTokens:count(raw.prompt_cache_hit_tokens??raw.cached_tokens)};
+}
 /** A request-scoped gateway. Creating it checks consent/configuration but never reads the key or contacts a provider. */
 export async function createBrowserModelRequester({file,profiles,consent,fetchImpl=fetch,allowTestLoopback=false}) {
   if(consent?.taskText!==true)throw fail('MODEL_CONSENT_REQUIRED');
@@ -120,11 +127,11 @@ export async function createBrowserModelRequester({file,profiles,consent,fetchIm
     const names=['browser_open','browser_observe','browser_act','browser_handoff'];
     if(tools.some(tool=>tool?.type!=='function'||!names.includes(tool.function?.name))||new Set(tools.map(tool=>tool.function.name)).size!==tools.length||JSON.stringify({messages,tools}).length>14_500_000)throw fail('MODEL_INPUT_INVALID');
     const result=await source.request(current,{body:{messages,tools,tool_choice:'auto'},fetchImpl,signal});
-    const message=result?.choices?.[0]?.message;
+    const message=result?.choices?.[0]?.message,usage=parseUsage(result?.usage);
     if(!plain(message)||message.content!==undefined&&message.content!==null&&typeof message.content!=='string'||message.tool_calls!==undefined&&message.tool_calls!==null&&!Array.isArray(message.tool_calls)||message.reasoning_content!==undefined&&message.reasoning_content!==null&&(typeof message.reasoning_content!=='string'||message.reasoning_content.length>30000))throw fail('MODEL_RESPONSE_INVALID');
     if(signal?.aborted)throw fail('CANCELLED');
     const finalProfile=await source.read();if(!finalProfile||fingerprint(finalProfile)!==locked)throw fail('MODEL_CONFIG_CHANGED');
-    return message;
+    return {message,usage};
   };
 }
 const tool={type:'function',function:{name:'propose_workflow_plan',description:'Return a proposed plan only. This does not execute tools. Use null recipe when no available workflow fits.',parameters:{type:'object',additionalProperties:false,properties:{recipeId:{type:['string','null'],enum:['purchase-monthly',null]},month:{type:'string'},explanation:{type:'string'},needsClarification:{type:'boolean'},questions:{type:'array',items:{type:'string'}}},required:['recipeId','month','explanation','needsClarification']}}};

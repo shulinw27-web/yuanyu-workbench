@@ -93,7 +93,7 @@ test('陈旧模型配置锁在PID被其他进程映像复用后自动恢复，�
 test('保存/选择/状态不联网；浏览器网关只在双授权请求中解密，配置切换拒绝迟到结果',async t=>{
   const f=await fixture(t),first=await f.profiles.save(makeInput()),second=await f.profiles.save(makeInput({label:'备用',apiKey:otherKey}));let calls=0;
   const request=await createBrowserModelRequester({profiles:f.profiles,consent:{taskText:true,pageContent:true},fetchImpl:async(url,options)=>{calls++;assert.equal(url,`${PROVIDERS.deepseek.defaultBaseUrl}/chat/completions`);assert.equal(options.headers.Authorization,`Bearer ${key}`);assert.ok(!options.body.includes(key));return response('合成记录已读取。');}});
-  assert.equal(calls,0);assert.equal(f.decrypts(),0);assert.equal((await request({messages,tools})).content,'合成记录已读取。');assert.equal(calls,1);
+  assert.equal(calls,0);assert.equal(f.decrypts(),0);assert.equal((await request({messages,tools})).message.content,'合成记录已读取。');assert.equal(calls,1);
   await f.profiles.select(second.id);await assert.rejects(request({messages,tools}),/MODEL_CONFIG_CHANGED/);assert.equal(calls,1);
   await f.profiles.select(first.id);const pending=await createBrowserModelRequester({profiles:f.profiles,consent:{taskText:true,pageContent:true},fetchImpl:async()=>{calls++;await f.profiles.select(second.id);return response('不能采用的旧结果');}});await assert.rejects(pending({messages,tools}),/MODEL_CONFIG_CHANGED/);assert.equal(calls,2);
 });

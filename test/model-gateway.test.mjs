@@ -30,7 +30,7 @@ test('浏览器模型仅向锁定提供方发送所同意的消息和工具，�
   const messages=[...browserMessages,{role:'assistant',content:null,tool_calls:[{id:'synthetic-read',type:'function',function:{name:'browser_observe',arguments:'{"siteId":"synthetic"}'}}]},toolMessage];
   const expected={content:null,tool_calls:[{id:'next-read',type:'function',function:{name:'browser_observe',arguments:'{"siteId":"synthetic"}'}}]};
   const request=await createBrowserModelRequester({file,consent,fetchImpl:async(url,options)=>{calls++;assert.equal(url,'https://model.example.test/v1/chat/completions');assert.equal(options.redirect,'error');assert.equal(options.headers.Authorization,'Bearer synthetic-model-key');const body=JSON.parse(options.body);assert.deepEqual(body.messages,messages);assert.deepEqual(body.tools,browserTools);assert.equal(body.tool_choice,'auto');assert.ok(!options.body.includes('synthetic-model-key'));return browserResponse(expected);}});
-  assert.deepEqual(await request({messages,tools:browserTools}),expected);assert.equal(calls,1);
+  assert.deepEqual(await request({messages,tools:browserTools}),{message:expected,usage:null});assert.equal(calls,1);
 });
 
 test('工厂之后修改模型、来源或页面范围会阻止请求，响应期间修改也不会采用旧结果',async t=>{
@@ -71,7 +71,7 @@ test('兼容提供方的null工具列表可作为最终文本返回，思考字�
   const {file,profile}=await fixture(t);await writeFile(file,JSON.stringify({...profile,dataScope:'selected_pages'}));
   const value={role:'assistant',content:'已读取当前合成记录。',tool_calls:null,reasoning_content:null};
   const request=await createBrowserModelRequester({file,consent,fetchImpl:async()=>browserResponse(value)});
-  assert.deepEqual(await request({messages:browserMessages,tools:browserTools}),value);
+  assert.deepEqual(await request({messages:browserMessages,tools:browserTools}),{message:value,usage:null});
   for(const reasoning_content of [{hidden:'unexpected'},'x'.repeat(30001)]){
     const malformed=await createBrowserModelRequester({file,consent,fetchImpl:async()=>browserResponse({...value,reasoning_content})});
     await assert.rejects(malformed({messages:browserMessages,tools:browserTools}),/MODEL_RESPONSE_INVALID/);

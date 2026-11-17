@@ -2,6 +2,12 @@
 
 日期：2026-11-16。状态：M7个人开源版范围调整已实施并验证——桌面版移除登录注册/推广额度/公司流程界面，自定义模型连接为唯一模型入口；工作区锁PID复用缺陷修复（曾导致启动白屏）。`npm test` 260/260通过（含4项锁映像复用回归），`npm run check` 123文件通过，`npm run test:desktop` 8/8阶段通过（desktop-smoke公司UI流程改为元素不存在断言+IPC层校验，product-ui-smoke重写为个人开源版断言，product-integration-smoke保留真实HTTP账号安全回归）。此前记录的M5/M6组件验证仍真实有效，仅桌面产品不再接入展示。真实模型/业务效果对照、生产与尚未开发部分按唯一清单保留。
 
+## 2026-11-17 Harness 升级 M-D1–M-D4 验证（架构设计落地前四步）
+
+范围：按 `designs/yuanyu-workbench-harness-design-v1.md` 迁移顺序实施前四步——M-D1 前缀稳定契约成文（registry 披露顺序契约注释 + `PROMPT_VERSION=2`）；M-D2 错误回喂三分类（`recovery-policy.mjs` 数据化 A/B/C 分类与 `TRANSIENT_READ_CODES`，executor 纯读工具瞬时错误推导 `not_started`，A 类以工具消息观察回喂且不消耗修正额度，打转指纹 `AGENT_LOOPS_DETECTED`）；M-D3 收紧式并行（executor 全局 busy 锁改站点粒度锁：open/observe 按站点并发、act/handoff 全局互斥；tool-loop 仅异站纯读批量并发、部分失败合并、降级串行）；M-D4 成本观测（网关 `usage` 解析透传 `{message,usage}`、循环累计并把 `usage/promptVersion/compactions` 落入任务终态白名单、budget schema v1→v2 原子迁移新增 `compactions` 键与 standard/induction 分档 caps 与 zeroable 清单）。
+
+命令与结果（Node v24.14.1 / Windows）：`npm test` 285/285 通过（新增 `test/harness-upgrades.test.mjs` 九项：前缀稳定契约跨轮字节相同；A 类瞬时读取错误回喂为观察且修正额度为 0、act 失败保持 may_have_occurred 直接停止、同一失败调用重复触发打转检测；异站纯读并发执行且工具消息按调用序对应 tool_call_id、同站批量与非纯读批量降级串行；usage 跨轮累计/未报告保持 null/非法用量拒绝；budget v2 分档 caps、v1 迁移、compaction 记账；任务终态 usage/promptVersion/compactions 白名单落盘与非法值拒绝）；`npm test` 连续 12+ 轮复跑中仅 2 轮出现 `product-client` 偶发 503（本机 SQLite 临时目录环境抖动，product 模块本轮未改动，HEAD 同环境复跑未复现该路径），其余轮次全部 285/285；`npm run check` 133 文件通过。既有 276 项回归中三处断言随网关返回形状演进同步更新（`model-gateway`/`model-profiles`/`attachments` 的 requester 断言改为 `{message,usage}`）。全部合成数据，未调用真实模型或企业系统；M-D5 压缩（条件触发默认不实施）、M-D6 W14 盲测接线与 M-D7 W15 归纳管线未在本轮范围。
+
 ## 2026-11-17 M9 多模态任务附件验证
 
 范围：通用浏览器任务可携带图片/文档/文本/音频附件（不支持视频），`src/agent/attachments.mjs` 校验与 parts 构建、任务存储落盘（`attachments/<taskId>/`）、仅首个用户消息的多模态数组网关校验、tool-loop 14MB 上下文上限、输入区附件 UI（chips/移除/视频拒绝）。

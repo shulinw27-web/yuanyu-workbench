@@ -5,6 +5,9 @@ const plain=value=>value!==null&&typeof value==='object'&&!Array.isArray(value)&
 const ID=/^[a-z][a-zA-Z0-9_-]{0,63}$/;
 const REF='^r-[a-f0-9-]{36}-[0-9]{1,3}$';
 export const BROWSER_TOOL_VERSION=1;
+// Prefix-stability contract: the disclosure order of this closed set is part of the wire format. Tool definitions are
+// serialized in this fixed order into every model request, so a stable prefix is preserved across rounds of one task.
+// Reordering, renaming or adding tools is a deliberate cache-invalidation event and requires bumping BROWSER_TOOL_VERSION.
 export const BROWSER_TOOL_NAMES=Object.freeze(['browser_open','browser_observe','browser_act','browser_handoff']);
 const string=(maxLength,extra={})=>({type:'string',maxLength,...extra});
 const object=(properties,required=[])=>({type:'object',properties,required,additionalProperties:false});
