@@ -98,15 +98,27 @@ export async function createBrowserModelRequester({file,profiles,consent,fetchIm
     const current=await source.read();
     if(!current||fingerprint(current)!==locked)throw fail('MODEL_CONFIG_CHANGED');
     if(!Array.isArray(messages)||messages.length<2||messages.length>40||!Array.isArray(tools)||tools.length<1||tools.length>4)throw fail('MODEL_INPUT_INVALID');
-    for(const message of messages){
+    for(const [index,message] of messages.entries()){
       if(!plain(message)||!['system','user','assistant','tool'].includes(message.role))throw fail('MODEL_INPUT_INVALID');
       if(message.role==='user'){
+        if(Array.isArray(message.content)){
+          // Only the initial task message may carry multimodal attachment parts.
+          if(index!==1)throw fail('MODEL_INPUT_INVALID');
+          if(!message.content.length||message.content.length>13||message.content[0]?.type!=='text'||typeof message.content[0].text!=='string'||!message.content[0].text.trim()||message.content[0].text.length>2000)throw fail('MODEL_INPUT_INVALID');
+          for(const part of message.content.slice(1)){
+            if(!plain(part))throw fail('MODEL_INPUT_INVALID');
+            if(part.type==='text'){if(typeof part.text!=='string'||!part.text.trim()||part.text.length>25000||SENSITIVE_TASK.test(part.text))throw fail('MODEL_INPUT_INVALID');}
+            else if(part.type==='image_url'){if(!/^data:image\/(png|jpeg|webp|gif|bmp);base64,/.test(part.image_url?.url??'')||part.image_url.url.length>5_000_000)throw fail('MODEL_INPUT_INVALID');}
+            else throw fail('MODEL_INPUT_INVALID');
+          }
+          continue;
+        }
         if(typeof message.content!=='string'||!message.content.trim()||message.content.length>2000)throw fail('MODEL_INPUT_INVALID');
         if(SENSITIVE_TASK.test(message.content))throw fail('SENSITIVE_TASK_TEXT');
       }
     }
     const names=['browser_open','browser_observe','browser_act','browser_handoff'];
-    if(tools.some(tool=>tool?.type!=='function'||!names.includes(tool.function?.name))||new Set(tools.map(tool=>tool.function.name)).size!==tools.length||JSON.stringify({messages,tools}).length>180000)throw fail('MODEL_INPUT_INVALID');
+    if(tools.some(tool=>tool?.type!=='function'||!names.includes(tool.function?.name))||new Set(tools.map(tool=>tool.function.name)).size!==tools.length||JSON.stringify({messages,tools}).length>14_500_000)throw fail('MODEL_INPUT_INVALID');
     const result=await source.request(current,{body:{messages,tools,tool_choice:'auto'},fetchImpl,signal});
     const message=result?.choices?.[0]?.message;
     if(!plain(message)||message.content!==undefined&&message.content!==null&&typeof message.content!=='string'||message.tool_calls!==undefined&&message.tool_calls!==null&&!Array.isArray(message.tool_calls)||message.reasoning_content!==undefined&&message.reasoning_content!==null&&(typeof message.reasoning_content!=='string'||message.reasoning_content.length>30000))throw fail('MODEL_RESPONSE_INVALID');

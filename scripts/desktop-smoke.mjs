@@ -87,6 +87,7 @@ export async function runDesktopSmoke({BrowserWindow,cryptoAdapter,systems,dataD
   // Render the real workbench preload bridge and inspect responsive geometry.
   const {ipcMain}=await import('electron');
   const ui=new BrowserWindow({show:false,width:1440,height:940,webPreferences:{preload:join(root,'src','preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
+  ui.webContents.on('console-message',(_e,level,message)=>{if(level>=3)console.error('UI渲染器错误：',message);});
   const uiController=await createController({dataDir,cryptoAdapter,systems,BrowserWindow,browserShow:false,onUpdate:s=>{if(!ui.isDestroyed())ui.webContents.send('workbench:update',s);}});
   const uiUrl=pathToFileURL(join(root,'src','ui','index.html')).href;
   ipcMain.handle('workbench:invoke',async(event,name,payload)=>{
@@ -94,7 +95,7 @@ export async function runDesktopSmoke({BrowserWindow,cryptoAdapter,systems,dataD
     try{return {ok:true,data:await uiController.invoke(name,payload)};}catch(error){return {ok:false,error:{code:error.code || error.message,message:'测试请求未完成。'}};}
   });
   async function until(expression){for(let i=0;i<100;i++){if(await ui.webContents.executeJavaScript(expression))return;await new Promise(r=>setTimeout(r,100));}throw new Error('UI_CONDITION_TIMEOUT');}
-  const runUi=async code=>{const result=await ui.webContents.executeJavaScript(`(()=>{try{${code};return {ok:true};}catch(error){return {testError:error.message};}})()`);if(result?.testError)throw new Error(`UI交互失败：${code.slice(0,90)}：${result.testError}`);return result;};
+  const runUi=async code=>{let result;try{result=await ui.webContents.executeJavaScript(`(()=>{try{${code};return {ok:true};}catch(error){return {testError:error.message};}})()`);}catch(error){throw new Error(`UI执行被拒绝：${code.slice(0,110)}：${error.message}`);}if(result?.testError)throw new Error(`UI交互失败：${code.slice(0,90)}：${result.testError}`);return result;};
   try {
     await ui.loadFile(join(root,'src','ui','index.html'));
     await until(`document.querySelector('#identity-avatar').textContent==='林' && !document.querySelector('#plan-submit').disabled`);
@@ -125,6 +126,14 @@ export async function runDesktopSmoke({BrowserWindow,cryptoAdapter,systems,dataD
     assert.equal((await uiController.snapshot()).projects.projects.length,0);
     await readdir(projectRoot);
     await rm(projectRoot,{recursive:true,force:true});
+    // 多模态附件：界面添加图片与文本附件（视频被拒绝），chips 可移除。
+    await runUi(`document.querySelector('[data-view="workspace"]').click()`);
+    await runUi(`const dt=new DataTransfer();dt.items.add(new File([new Uint8Array([137,80,78,71])],'回归截图.png',{type:'image/png'}));dt.items.add(new File(['SYN-091 参考'],'核对笔记.txt',{type:'text/plain'}));dt.items.add(new File(['video'],'录像.mp4',{type:'video/mp4'}));const input=document.querySelector('#attachment-input');input.files=dt.files;input.dispatchEvent(new Event('change',{bubbles:true}));`);
+    await until(`document.querySelectorAll('#attachment-list .attachment-chip').length===2 && document.querySelectorAll('#attachment-list .attachment-chip')[0].textContent.includes('回归截图.png')`);
+    await runUi(`[...document.querySelectorAll('#attachment-list .attachment-remove')][0].click();`);
+    await until(`document.querySelectorAll('#attachment-list .attachment-chip').length===1 && document.querySelector('#attachment-list').textContent.includes('核对笔记.txt')`);
+    await runUi(`document.querySelector('#attachment-list .attachment-remove').click();`);
+    await until(`document.querySelector('#attachment-list').hidden`);
     await runUi(`const picker=document.querySelector('#identity-select');picker.value='bob';picker.dispatchEvent(new Event('change',{bubbles:true}));`);
     await until(`document.querySelector('#identity-avatar').textContent==='陈' && !document.querySelector('#identity-select').disabled`);
     assert.ok((await uiController.snapshot()).workflows.every(w=>w.name!=='界面回归月报'),'跨身份工作流必须隔离');
@@ -177,6 +186,6 @@ export async function runDesktopSmoke({BrowserWindow,cryptoAdapter,systems,dataD
     ui.setSize(1366,768);await new Promise(r=>setTimeout(r,100));assert.ok(await ui.webContents.executeJavaScript(`document.documentElement.scrollWidth<=innerWidth+2`));
     await writeFile(join(root,'output','screenshots','workbench-1366-light.png'),(await ui.webContents.capturePage()).toPNG());
     console.log('PASS UI：真实页面计划确认→执行→文件→保存→IPC发布校验→身份隔离→首页换月复用；隔离preload、1440和1024宽度无水平溢出；截图已保存。');
-    console.log('PASS UI增强：编辑v2→停用v3→启用v4→恢复v5、撤旧发布、站点注册、模型未配置禁用、深浅主题及1920/1366布局；登录注册与公司流程入口已按个人开源版移除；项目创建空目录与删除记录不删文件。');
+    console.log('PASS UI增强：编辑v2→停用v3→启用v4→恢复v5、撤旧发布、站点注册、模型未配置禁用、深浅主题及1920/1366布局；登录注册与公司流程入口已按个人开源版移除；项目创建空目录与删除记录不删文件；多模态附件chips（视频拒绝）回归通过。');
   } finally {ipcMain.removeHandler('workbench:invoke');await uiController.close();ui.destroy();}
 }

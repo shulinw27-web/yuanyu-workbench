@@ -2,6 +2,12 @@
 
 日期：2026-11-16。状态：M7个人开源版范围调整已实施并验证——桌面版移除登录注册/推广额度/公司流程界面，自定义模型连接为唯一模型入口；工作区锁PID复用缺陷修复（曾导致启动白屏）。`npm test` 260/260通过（含4项锁映像复用回归），`npm run check` 123文件通过，`npm run test:desktop` 8/8阶段通过（desktop-smoke公司UI流程改为元素不存在断言+IPC层校验，product-ui-smoke重写为个人开源版断言，product-integration-smoke保留真实HTTP账号安全回归）。此前记录的M5/M6组件验证仍真实有效，仅桌面产品不再接入展示。真实模型/业务效果对照、生产与尚未开发部分按唯一清单保留。
 
+## 2026-11-17 M9 多模态任务附件验证
+
+范围：通用浏览器任务可携带图片/文档/文本/音频附件（不支持视频），`src/agent/attachments.mjs` 校验与 parts 构建、任务存储落盘（`attachments/<taskId>/`）、仅首个用户消息的多模态数组网关校验、tool-loop 14MB 上下文上限、输入区附件 UI（chips/移除/视频拒绝）。
+
+命令与结果（Node v24.14.1 / Windows）：`npm test` 276/276 通过（新增 `test/attachments.test.mjs` 五项：类型白名单与视频显式拒绝/大小数量上限/data URL 逐字节核验；parts 构建（图片 image_url、文本摘录、PDF 仅登记）；网关仅首条用户消息接受 parts 且原样发送；存储白名单/落盘往返/篡改拒绝；控制器端到端——图片附件任务经 awaiting_review→确认完成、附件按任务落盘、模型首请求实收 image_url part）；`npm run check` 131 文件通过；`npm run test:desktop` 8/8 阶段通过，UI 阶段新增"DataTransfer 注入图片+文本+视频→视频被拒、chips=2→移除→清空"断言。全部合成数据，未调用真实模型或企业系统；附件仅在用户确认同意任务文本外发时随首条消息发送。
+
 ## 2026-11-16 M8 项目化工作验证
 
 范围：项目以新建空目录或本地已有文件夹登记开始（`src/project/store.mjs`、控制器 `project.*` 动作、`workbench:pickDirectory` 目录选择 IPC、`src/ui/project-ui.js` 项目视图）。项目仅为目录登记：导入不移动/复制/修改文件，删除只移除登记记录；路径须为仓库外真实目录且无符号链接，按身份隔离。

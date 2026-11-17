@@ -42,6 +42,9 @@ const messages = {
   AGENT_SKILL_VERSION_CHANGED:'浏览器工作流已修订，请重新查看参数并创建任务。',AGENT_PARAMETER_INVALID:'工作流参数无效，请使用已声明的查询参数，不要填写凭据。',
   AGENT_MOCK_SCOPE:'合成演示仅支持读取交互式本机站点的2026-09或2026-10记录；请在任务中注明“合成”。它不代表真实模型理解能力。',AGENT_SITE_SCOPE:'请选择当前模式允许的站点；合成演示仅使用本机内建站点。',AGENT_CONFIG_INVALID:'浏览器任务需要1至3个授权站点和有效执行模式。',AGENT_TASK_ACTIVE:'请先继续或取消当前等待中的浏览器任务。',AGENT_BINDINGS_CHANGED:'此任务或工作流绑定的站点来源或版本已变化，请重新确认并建立流程。',AGENT_TASK_NOT_FOUND:'当前身份没有此浏览器任务或工作流。',AGENT_SKILL_NOT_FOUND:'原工作流已删除，无法继续该次运行。',AGENT_TASK_NOT_RESUMABLE:'此任务不能继续，请新建任务。',AGENT_TIMEOUT:'本轮操作超时，未标记为完成。请检查页面后手动继续。',AGENT_RESULT_UNVERIFIED:'未读取到可以核对的页面结果，任务没有标为完成。',AGENT_CONTEXT_CHANGED:'当前身份或站点配置已变化，任务已停止。',AGENT_SENSITIVE_DATA:'任务或模板疑似包含凭据或原始网页，未保存；请通过独立登录窗口操作。',PAGE_STRUCTURE_CHANGED:'页面结构已变化，无法唯一定位原有步骤，请人工检查。',PAGE_CONTENT_CONSENT_REQUIRED:'请分别确认发送本条任务文本和所选页面内容。',MODEL_PAGE_SCOPE_REQUIRED:'本机模型配置需要明确设置dataScope为selected_pages后，才能启用页面理解。',MODEL_CONFIG_CHANGED:'模型配置已变化，本轮已停止；请重新确认调用范围。',
   CANCELLED:'任务已取消，未继续生成结果。',ARTIFACT_NOT_FOUND:'文件不存在或不属于当前用户已完成的运行。',
+  ATTACHMENT_LIMIT:'附件最多 6 个。',ATTACHMENT_INVALID:'附件格式无效。',ATTACHMENT_NAME_INVALID:'附件名称无效，不能包含路径分隔符。',
+  ATTACHMENT_TYPE_UNSUPPORTED:'仅支持图片、PDF、Office 文档、文本、CSV/JSON 与音频附件，不支持视频。',ATTACHMENT_VIDEO_UNSUPPORTED:'不支持视频附件，请选择其他文件形式。',
+  ATTACHMENT_TOO_LARGE:'附件过大：单个不超过 3MB，合计不超过 9MB。',ATTACHMENT_DATA_INVALID:'附件内容无法验证。',ATTACHMENT_DUPLICATE:'附件名称重复。',
   PROJECT_INPUT_INVALID:'项目名称或路径无效，请检查后重试。',PROJECT_UNSAFE_PATH:'项目目录必须是仓库外的本地目录，且路径不能包含符号链接。',PROJECT_DIRECTORY_NOT_EMPTY:'目标位置已存在非空目录；请换一个空位置，或改用“从本地文件夹导入”。',PROJECT_DIRECTORY_MISSING:'所选文件夹不存在或不是目录，请重新选择。',PROJECT_DUPLICATE:'该文件夹已登记为项目，不能重复导入。',PROJECT_NOT_FOUND:'没有找到这个项目，请刷新后重试。',PROJECT_VERSION_CONFLICT:'项目列表已更新，请刷新后重试。',PROJECT_LOCKED:'项目存储正由其他进程使用。',PROJECT_STORE_INVALID:'项目数据无法验证，请保留原文件后检查。',PROJECT_LIMIT:'项目数量已达本机存储上限。',PROJECT_IDENTITY_INVALID:'项目身份无效。'
 };
 export function safeError(error) {
@@ -343,7 +346,7 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
           if(owner!==identity||request.signal.aborted)throw new Error('CANCELLED');return result;
         }finally{if(planning===request)planning=null;await notify();}
       }
-      case 'agent.start':return launchAgent(()=>agentRuntime.start({goal:payload.goal,siteIds:payload.siteIds,mode:payload.mode,consent:payload.consent,budgetOptions:payload.budgetOptions,enableReflection:payload.enableReflection}));
+      case 'agent.start':return launchAgent(()=>agentRuntime.start({goal:payload.goal,siteIds:payload.siteIds,mode:payload.mode,consent:payload.consent,budgetOptions:payload.budgetOptions,enableReflection:payload.enableReflection,attachments:payload.attachments}));
       case 'agent.confirmResult':{requireIdle();const result=await agentRuntime.confirmResult(payload);const task=(await agentStore.listTasks()).find(task=>task.id===payload.id);await offerEpisode(task);await offerLesson(task);return result;}
       case 'agent.history.clear':requireIdle();result=await agentRuntime.cleanupHistory(payload);break;
       case 'agent.resume':return launchAgent(async()=>{const task=(await agentStore.listTasks()).find(task=>task.id===payload.id);if(task?.execution==='demonstration')throw new Error('DEMONSTRATION_RESUME_REQUIRED');return agentRuntime.resume({id:payload.id,consent:payload.consent});});

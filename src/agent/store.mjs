@@ -169,6 +169,22 @@ function reflections(input){
     return clone(entry);
   });
 }
+function attachments(input){
+  assert(Array.isArray(input)&&input.length<=6,'AGENT_INPUT_INVALID','附件数量无效。');
+  const seen=new Set();
+  return input.map(entry=>{
+    fields(entry,['id','name','mediaType','kind','size']);
+    identifier(entry.id);
+    const name=text(entry.name,120);
+    assert(/^[^\\/:*?"<>|]{1,120}$/.test(name),'AGENT_INPUT_INVALID','附件名称无效。');
+    assert(/^(image|document|text|audio)\//.test(entry.mediaType),'AGENT_INPUT_INVALID','附件类型无效。');
+    assert(['image','document','text','audio'].includes(entry.kind),'AGENT_INPUT_INVALID','附件类别无效。');
+    assert(Number.isSafeInteger(entry.size)&&entry.size>0&&entry.size<=3*1024*1024,'AGENT_INPUT_INVALID','附件大小无效。');
+    assert(!seen.has(name.toLowerCase()),'AGENT_INPUT_INVALID','附件名称重复。');seen.add(name.toLowerCase());
+    return {id:entry.id,name,mediaType:entry.mediaType,kind:entry.kind,size:entry.size};
+  });
+}
+const attachmentStoredName=record=>`${record.id}-${record.name.replace(/[\\/:*?"<>|\u0000-\u001F]/g,'_').slice(0,80)}`;
 function verification(input){
   fields(input,['status','code','evidenceIds','reviewedAt']);
   assert(['verified','needs_review','user_confirmed'].includes(input.status),'AGENT_VERIFICATION_INVALID','结果验证状态无效。');
@@ -178,7 +194,7 @@ function verification(input){
 function sourceFingerprint(template){return createHash('sha256').update(JSON.stringify({goalTemplate:template.goalTemplate,siteBindings:template.siteBindings,recipe:template.recipe})).digest('hex');}
 function sourceReceipt(input){fields(input,['taskId','fingerprint','completedAt']);identifier(input.taskId);assert(typeof input.fingerprint==='string'&&/^[a-f0-9]{64}$/.test(input.fingerprint));text(input.completedAt,80);return clone(input);}
 function validateTask(task) {
-  fields(task, ['id', 'kind', 'goal', 'mode', 'execution', 'skillId','skillVersion','parameterValues', 'replay', 'budget','verification','contextSummary','reflections', 'status', 'steps', 'message', 'error', 'awaitingSiteId', 'trace', 'siteBindings', 'createdAt', 'updatedAt', 'finishedAt', 'sessionId', 'attempt']);
+  fields(task, ['id', 'kind', 'goal', 'mode', 'execution', 'skillId','skillVersion','parameterValues', 'replay', 'budget','verification','contextSummary','reflections', 'status', 'steps', 'message', 'error', 'awaitingSiteId', 'trace', 'siteBindings', 'attachments', 'createdAt', 'updatedAt', 'finishedAt', 'sessionId', 'attempt']);
   identifier(task.id);
   assert(task.kind === 'browser' && STATUSES.has(task.status) && MODES.has(task.mode)
     && Number.isSafeInteger(task.attempt) && task.attempt >= 1, 'AGENT_STORE_INVALID', '浏览器任务类型或状态无效。');
@@ -199,6 +215,7 @@ function validateTask(task) {
   if(task.budget!==undefined)validateTaskBudget(task.budget);
   if(task.verification!==undefined)verification(task.verification);
   if(task.reflections!==undefined)reflections(task.reflections);
+  if(task.attachments!==undefined)task.attachments=attachments(task.attachments);
   if(task.contextSummary!==undefined){fields(task.contextSummary,['requiredSiteIds','hasSelectedMemory']);assert(Array.isArray(task.contextSummary.requiredSiteIds)&&task.contextSummary.requiredSiteIds.length<=3&&task.contextSummary.requiredSiteIds.every(id=>siteBindings.some(site=>site.id===id))&&typeof task.contextSummary.hasSelectedMemory==='boolean');}
   if (task.message !== undefined) text(task.message, 2000, 0);
   if (task.error !== undefined) {
@@ -369,7 +386,7 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
     listSkills() { return operation((state) => clone(state.skills).sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt.localeCompare(a.updatedAt))); },
     createTask(input) {
       return operation(async (state, save) => {
-        fields(input, ['goal', 'siteBindings', 'mode', 'execution', 'skillId','skillVersion','values','budget','contextSummary']);
+        fields(input, ['goal', 'siteBindings', 'mode', 'execution', 'skillId','skillVersion','values','budget','contextSummary','attachments']);
         assert(MODES.has(input.mode), 'AGENT_INPUT_INVALID', '浏览器任务运行模式无效。');
         if(input.execution!==undefined)assert(input.execution==='demonstration'&&input.skillId===undefined,'AGENT_INPUT_INVALID','示范任务不能携带工作流引用。');
         const goal = text(input.goal, 2000).trim();
@@ -388,10 +405,37 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
         if(input.execution!==undefined)task.execution=input.execution;
         if(input.budget!==undefined)task.budget=validateTaskBudget(input.budget);
         if(input.contextSummary!==undefined)task.contextSummary=clone(input.contextSummary);
+        if(input.attachments!==undefined)task.attachments=attachments(input.attachments);
         if (input.skillId !== undefined){const skill=skillById(state,input.skillId);task.skillId=input.skillId;task.skillVersion=skill.version;task.parameterValues=resolveSkillParameters(skill,input.values);}
         validateTask(task);state.tasks.push(task);
         await save();
         return taskView(task);
+      });
+    },
+    async saveAttachment(id, record, buffer) {
+      return operation(async (state) => {
+        taskById(state, id);
+        const meta = attachments([record])[0];
+        const base = path.join(root.directory, 'agents', identity.companyId, identity.userId);
+        const dir = path.join(base, 'attachments', id);
+        await directory(dir);
+        const storedName = attachmentStoredName(meta);
+        await fs.writeFile(path.join(dir, storedName), buffer, { mode: 0o600 });
+        return { storedName };
+      });
+    },
+    async loadAttachment(id, record) {
+      return operation(async (state) => {
+        const task = taskById(state, id);
+        const meta = (task.attachments ?? []).find(entry => entry.id === record.id && entry.name === record.name);
+        assert(meta, 'AGENT_TASK_NOT_FOUND', '任务没有此附件。');
+        const base = path.join(root.directory, 'agents', identity.companyId, identity.userId);
+        const dir = path.join(base, 'attachments', id);
+        await directory(dir);
+        const file = path.join(dir, attachmentStoredName(meta));
+        const info = await fs.lstat(file);
+        assert(info.isFile() && !info.isSymbolicLink() && info.size === meta.size, 'AGENT_UNSAFE_PATH', '附件文件无法验证。');
+        return fs.readFile(file);
       });
     },
     updateTask(id, patch) {

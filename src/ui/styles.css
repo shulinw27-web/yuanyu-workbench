@@ -33,3 +33,9 @@
 .project-path-row{align-items:center;width:100%;gap:10px}
 .project-path-row>.text-input{flex:1;min-width:0}
 .project-card-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+
+/* 任务附件：chips 横排与移除按钮 */
+.attachment-list{display:flex;flex-wrap:wrap;gap:8px;padding:6px 2px 0}
+.attachment-chip{display:inline-flex;align-items:center;gap:6px;max-width:280px;border:1px solid var(--border,#d0d0d0);border-radius:999px;padding:3px 10px;font-size:12px;background:transparent;color:inherit}
+.attachment-chip .attachment-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attachment-chip .attachment-remove{border:none;background:none;cursor:pointer;color:inherit;padding:0;font-size:13px;line-height:1}

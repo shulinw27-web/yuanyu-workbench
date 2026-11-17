@@ -14,7 +14,7 @@ const state = {
   view: 'workspace', filter: 'all', plan: null, actionPending: false, planning: false,
   switching: false, switchTarget: null, activeRunId: null, connected: false,
   expandedSteps: new Set(), request: '', plannerMode: 'preset', modelConsent: false, pageConsent: false, selectedSiteIds: [], agentSitesChosen: false,
-  modelTestResult: '', writePreview: null, demonstrationSiteIds: [],
+  modelTestResult: '', writePreview: null, demonstrationSiteIds: [], attachments: [],
 };
 let toastTimer;
 let confirmCallback;
@@ -511,6 +511,7 @@ function renderAgentTask(task) {
   const heading = append(element('div', 'run-heading'), element('h3', '', task.goal || '浏览器任务'), statusNode(task.status));
   if (['running', 'awaiting_user', 'interrupted'].includes(task.status) && !(taught && task.status === 'interrupted')) heading.append(button('取消任务', 'button secondary small', () => mutation(taught ? 'demo.cancel' : 'agent.cancel', { id: task.id }, taught ? '已取消示范。' : '已取消浏览器任务。'), { disabled: state.actionPending }));
   append(panel, heading, element('p', 'run-caption', `${taught ? '人工示范 · 本机记录只读步骤' : task.skillId ? '个人工作流 · 本机只读重放' : task.mode === 'mock_browser' ? '合成模型 · 本机浏览器演示' : '模型浏览器任务'} · ${dateText(task.createdAt)}`));
+  if (list(task.attachments).length) panel.append(element('p', 'form-note', `附件：${list(task.attachments).map(item => item.name).join('、')}（随任务文本发送给模型；PDF、Office 与音频仅登记不解析）`));
   if (task.message) panel.append(element('p', 'agent-message', task.message));
   if(task.budget){const b=task.budget;panel.append(element('p','form-note',`模型请求 ${b.used?.modelRequests||0}/${b.limits?.modelRequests||0} · 修正 ${b.used?.corrections||0}/${b.limits?.corrections||1} · 轮次 ${b.used?.rounds||0}/${b.limits?.rounds||12}；继续不刷新累计预算。`));}
   if(task.verification)panel.append(element('p','form-note',`结果核对：${({verified:'确定性校验通过',user_confirmed:'由你核对确认',needs_review:'需要你核对'})[task.verification.status]||'待核对'}`));
@@ -982,9 +983,55 @@ function render() {
   renderWriteDemo();
 }
 
+const ATTACHMENT_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp', pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json', log: 'text/plain', mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', ogg: 'audio/ogg' };
+const ATTACHMENT_VIDEO = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', 'flv', 'wmv', 'ts', 'mpg', 'mpeg', '3gp', 'rmvb']);
+const ATTACHMENT_MAX_FILES = 6, ATTACHMENT_MAX_PER_FILE = 3 * 1024 * 1024, ATTACHMENT_MAX_TOTAL = 9 * 1024 * 1024;
+
+function readAsDataURL(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error('附件读取失败。')); reader.readAsDataURL(file); }); }
+
+async function addAttachments(files) {
+  for (const file of files) {
+    const extension = (file.name.split('.').pop() || '').toLowerCase();
+    const mediaType = ATTACHMENT_TYPES[extension];
+    if (ATTACHMENT_VIDEO.has(extension)) { toast(`不支持视频附件：${file.name}`, true); continue; }
+    if (!mediaType) { toast(`不支持的附件类型：${file.name}`, true); continue; }
+    // 浏览器给出的 MIME 与登记表不一致时（如 image/jpg），以扩展名登记表为准，但拒绝明显错配。
+    if (file.type && !file.type.startsWith(mediaType.split('/')[0] + '/') && file.type !== mediaType) { toast(`附件类型与扩展名不符：${file.name}`, true); continue; }
+    if (state.attachments.length >= ATTACHMENT_MAX_FILES) { toast('附件最多 6 个。', true); break; }
+    if (file.size > ATTACHMENT_MAX_PER_FILE) { toast(`附件过大（单个不超过 3MB）：${file.name}`, true); continue; }
+    const total = state.attachments.reduce((sum, item) => sum + item.size, 0) + file.size;
+    if (total > ATTACHMENT_MAX_TOTAL) { toast('附件合计不超过 9MB。', true); break; }
+    if (state.attachments.some(item => item.name.toLowerCase() === file.name.toLowerCase())) { toast(`附件名称重复：${file.name}`, true); continue; }
+    try {
+      const data = await readAsDataURL(file);
+      if (!data.startsWith(`data:${mediaType};base64,`)) { toast(`附件内容无法验证：${file.name}`, true); continue; }
+      state.attachments.push({ name: file.name, mediaType, size: file.size, data });
+    } catch (error) { toast(error.message, true); }
+  }
+  renderAttachmentChips();
+}
+
+function removeAttachment(name) { state.attachments = state.attachments.filter(item => item.name !== name); renderAttachmentChips(); }
+
+function renderAttachmentChips() {
+  const box = $('#attachment-list');
+  box.replaceChildren();
+  box.hidden = !state.attachments.length;
+  for (const item of state.attachments) {
+    const chip = element('span', 'attachment-chip');
+    chip.append(element('span', 'attachment-name', `${item.name}（${(item.size / 1024).toFixed(0)}KB）`));
+    const remove = element('button', 'attachment-remove', '×');
+    remove.type = 'button'; remove.setAttribute('aria-label', `移除附件 ${item.name}`);
+    remove.addEventListener('click', () => removeAttachment(item.name));
+    chip.append(remove);
+    box.append(chip);
+  }
+}
+
 async function generatePlan(text, month, workflowId) {
   if (isLocked() || state.planning) return;
   if (!text.trim()) { $('#task-input').focus(); return; }
+  if (state.attachments.length && !browserMode()) { toast('附件仅支持“合成模型 · 浏览器”与“模型浏览器任务”，请切换规划方式或移除附件。', true); return; }
   if (browserMode()) {
     selectDefaultAgentSites();
     if (!state.selectedSiteIds.length || state.selectedSiteIds.length > 3) { renderAgentSiteChoices(); $('#agent-sites-dialog').showModal(); return; }
@@ -1025,7 +1072,7 @@ async function startRun() {
   render();
   try {
     let data;
-    if (plan.kind === 'browser') data = await invoke(plan.skillId ? 'agent.skill.run' : 'agent.start', plan.skillId ? { id: plan.skillId, mode: plan.mode, values: plan.values || {}, expectedVersion: plan.skillVersion } : { goal: plan.goal, siteIds: plan.siteIds, mode: plan.mode, consent: agentConsent(plan.mode),...memoryUI.options() });
+    if (plan.kind === 'browser') data = await invoke(plan.skillId ? 'agent.skill.run' : 'agent.start', plan.skillId ? { id: plan.skillId, mode: plan.mode, values: plan.values || {}, expectedVersion: plan.skillVersion } : { goal: plan.goal, siteIds: plan.siteIds, mode: plan.mode, consent: agentConsent(plan.mode), attachments: state.attachments.map(({ name, mediaType, size, data }) => ({ name, mediaType, size, data })), ...memoryUI.options() });
     else {
       const payload = { month: plan.month };
       if (plan.workflowId) payload.workflowId = plan.workflowId;
@@ -1034,6 +1081,8 @@ async function startRun() {
     state.activeRunId = data?.taskId || data?.runId || data?.id || null;
     if (plan.kind === 'browser') { memoryUI.reset();state.modelConsent = false; state.pageConsent = false; }
     state.plan = null;
+    state.attachments = [];
+    renderAttachmentChips();
     $('#task-input').value = '';
     await refresh();
     toast('任务已交给本机运行器，进度随实际操作更新。');
@@ -1268,6 +1317,8 @@ $('#demonstration-form').addEventListener('submit', async event => {
   finally { state.actionPending = false; render(); renderDemonstrationSites(); }
 });
 $('#task-form').addEventListener('submit', (event) => { event.preventDefault(); generatePlan($('#task-input').value, $('#task-month').value); });
+$('#attachment-open').addEventListener('click', () => $('#attachment-input').click());
+$('#attachment-input').addEventListener('change', (event) => { addAttachments([...event.target.files]); event.target.value = ''; });
 $('#task-input').addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault();

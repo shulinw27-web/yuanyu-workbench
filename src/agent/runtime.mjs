@@ -1,6 +1,7 @@
 import {runBrowserToolLoop} from '../model/tool-loop.mjs';
 import {createBrowserModelRequester} from '../model/gateway.mjs';
 import {validateAgentTrace,resolveSkillParameters,instantiateSkillRecipe} from './store.mjs';
+import {validateAttachments,buildAttachmentParts,attachmentRecords} from './attachments.mjs';
 import {createTaskBudget} from './budget.mjs';
 import {createWorkingContext} from './context.mjs';
 import {verifyTaskResult} from './verifier.mjs';
@@ -51,11 +52,12 @@ export function createAgentRuntime({store,getSites,getBrowser,isCurrent,authoriz
   const checkBindings=async(bindings,mode)=>JSON.stringify(await checkedSites(bindings.map(s=>s.id),mode))===JSON.stringify(bindings);
   const lookup=async(id,list)=>{const item=(await list()).find(t=>t.id===id);if(!item)throw fail('AGENT_TASK_NOT_FOUND');return item;};
   const consentFor=(mode,consent)=>{if(mode==='compatible_browser'&&(consent?.taskText!==true||consent?.pageContent!==true))throw fail('PAGE_CONTENT_CONSENT_REQUIRED');return {taskText:true,pageContent:true};};
-  async function launch({goal,siteIds,mode,consent,skill,previous,values,budgetOptions={},enableReflection=false}) {
+  async function launch({goal,siteIds,mode,consent,skill,previous,values,budgetOptions={},enableReflection=false,attachments=[]}) {
     if(active||startup)throw fail('BUSY');
     let settled;const pending={cancelled:false,settled:new Promise(resolve=>{settled=resolve;})};startup=pending;
     try {
       const accepted=skill?{taskText:false,pageContent:false}:consentFor(mode,consent),siteBindings=await checkedSites(siteIds,mode);
+      const suppliedAttachments=skill?[]:validateAttachments(attachments);
       if((skill&&JSON.stringify(siteBindings)!==JSON.stringify(skill.template.siteBindings)) || (previous&&JSON.stringify(siteBindings)!==JSON.stringify(previous.siteBindings)))throw fail('AGENT_BINDINGS_CHANGED');
       if(previous?.skillId&&(previous.skillVersion??1)!==skill?.version)throw fail('AGENT_SKILL_VERSION_CHANGED');
       const parameterValues=skill?resolveSkillParameters(skill,previous?previous.parameterValues:values):undefined;
@@ -68,8 +70,11 @@ export function createAgentRuntime({store,getSites,getBrowser,isCurrent,authoriz
       // Configuration/consent validation happens before creating an executable task.
       const requestModel=skill?null:mode==='mock_browser'?createMockRequester({task:goal,siteIds}):await requesterFactory({file:modelFile,consent:accepted});
       if(!isCurrent())throw fail('CANCELLED');
-      const task=previous?await store.resumeTask(previous.id):await store.createTask({goal,siteBindings,mode,budget:createTaskBudget({...budgetOptions,skill:!!skill}),contextSummary:workingContext.checkpoint(),...(skill?{skillId:skill.id,skillVersion:skill.version,values:parameterValues}:{})});
+      const task=previous?await store.resumeTask(previous.id):await store.createTask({goal,siteBindings,mode,budget:createTaskBudget({...budgetOptions,skill:!!skill}),contextSummary:workingContext.checkpoint(),...(suppliedAttachments.length?{attachments:attachmentRecords(suppliedAttachments)}:{}),...(skill?{skillId:skill.id,skillVersion:skill.version,values:parameterValues}:{})});
+      if(!previous)for(const item of suppliedAttachments)await store.saveAttachment(task.id,attachmentRecords(suppliedAttachments).find(entry=>entry.id===item.id),item.buffer);
       if(pending.cancelled){await store.updateTask(task.id,{status:'cancelled',expectedAttempt:task.attempt});await onUpdate();return {taskId:task.id};}
+      const taskAttachments=await Promise.all((task.attachments??[]).map(async record=>({record,buffer:previous?await store.loadAttachment(task.id,record):suppliedAttachments.find(item=>item.id===record.id)?.buffer})));
+      const attachmentParts=buildAttachmentParts(taskAttachments.filter(entry=>entry.buffer).map(({record,buffer})=>({...record,buffer,data:`data:${record.mediaType};base64,${buffer.toString('base64')}`})));
       const token={id:task.id,abort:new AbortController(),promise:null,session:null,timedOut:false};active=token;
       token.promise=(async()=>{
         // An explicit resume replays read-only steps from fresh observations, not an old DOM cursor.
@@ -150,7 +155,7 @@ export function createAgentRuntime({store,getSites,getBrowser,isCurrent,authoriz
                   nextAction:replay.state==='failed'||handoff?'stop':'reobserve'});
               }
             });
-          }else result=await runBrowserToolLoop({task:goal,allowedSiteIds:siteIds,requiredSiteIds:workingContext.requiredSiteIds,workingContext:workingContext.text,enableReflection,onBudget,onReflection:emitReflection,verifyResult:({evidence=[]})=>verifyTaskResult({mode,context:workingContext,observations,dirtySiteIds:[...dirty],evidence}),consent:accepted,browser:wrapped,requestModel,checkContext:context,signal:token.abort.signal,maxSteps:12,onCheckpoint:async cp=>{
+          }else result=await runBrowserToolLoop({task:goal,allowedSiteIds:siteIds,requiredSiteIds:workingContext.requiredSiteIds,workingContext:workingContext.text,enableReflection,onBudget,onReflection:emitReflection,verifyResult:({evidence=[]})=>verifyTaskResult({mode,context:workingContext,observations,dirtySiteIds:[...dirty],evidence}),consent:accepted,browser:wrapped,requestModel,checkContext:context,signal:token.abort.signal,maxSteps:12,attachmentParts,onCheckpoint:async cp=>{
             const id=`step-${cp.step}`,index=steps.findIndex(s=>s.id===id);
             const label=cp.tool?({browser_open:'打开授权站点',browser_observe:'读取当前页面',browser_act:'执行只读页面操作',browser_handoff:'等待用户登录或验证'}[cp.tool]):'整理下一步';
             const status=({planning:'pending',executing:'running',step_completed:'completed',awaiting_review:'completed'}[cp.status]||cp.status);

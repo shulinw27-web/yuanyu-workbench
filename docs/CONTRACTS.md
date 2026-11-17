@@ -151,3 +151,10 @@ UI负责界面文件 src/ui/*；不直接访问Node和文件系统。凭据表�
 - `snapshot.projects`返回`{revision,projects,currentId}`；未登录或账号撤权时整体隐藏（与`memory`同款门控）。项目是按身份隔离的**目录登记记录**，存于仓库外`projects/<company>/<user>/state.json`，单写者队列、原子替换、PID映像锁与`projects`根锁。
 - `project.createEmpty{name,root}`在全部校验通过后才创建目录（失败无目录副作用）：root必须绝对、仓库外、链路无符号链接；目标不存在或为空目录才创建，非空拒绝。`project.importFolder{root,name?}`只登记已存在的真实文件夹（默认名取文件夹名），不移动、不复制、不修改其中任何文件；同一真实路径（按realpath规范化，含大小写/斜杠差异）拒绝重复登记。`project.rename`、`project.setCurrent{id|null}`、`project.remove`、`project.openFolder`均以`expectedRevision`裁决，`openFolder`调用本机打开器并顺带更新最近打开与当前项目。
 - 安全边界：删除项目只移除登记记录，永不删除用户文件；路径含符号链接、落点在代码仓库内或状态文件被篡改一律拒绝（`PROJECT_UNSAFE_PATH` / `PROJECT_STORE_INVALID`）；界面渲染项目名与路径为纯文本，不执行项目目录内容。`workbench:pickDirectory`为系统目录选择IPC，校验请求来源帧，仅返回所选路径或取消，不读取目录内容。
+
+## M9 多模态任务附件（2026-11-17）
+
+- 附件仅用于通用浏览器任务（`agent.start` 的 `attachments` 字段）：类型白名单为图片（png/jpg/jpeg/webp/gif/bmp）、PDF、Office（doc/docx/xls/xlsx/ppt/pptx）、文本（txt/md/csv/json/log）与音频（mp3/wav/m4a/ogg）；**视频显式拒绝**（`ATTACHMENT_VIDEO_UNSUPPORTED`）。上限 6 个、单个 3MB、合计 9MB，名称去重，data URL 逐字节核验后才允许落盘或外发。
+- 附件文件按任务写入 `agents/<company>/<user>/attachments/<taskId>/`，权限 600；读取时校验非符号链接且大小与任务记录一致，篡改或缺失一律拒绝（`AGENT_UNSAFE_PATH`）。任务记录仅保存附件元数据白名单（id/name/mediaType/kind/size），不含文件内容。
+- 模型消息中仅**首个用户消息**允许 parts 数组：首 part 必须为任务文本，其余为 `image_url`（仅 data:image/(png|jpeg|webp|gif|bmp) 前缀，≤5M 字符）或 `text`（≤25000 字，过敏感词校验）；其余用户消息保持纯文本。后续轮次的历史消息中原样保留首条 parts。合成 Mock 模式只记录附件，不把附件交给合成请求器。
+- 同意边界：附件随任务文本在 `consent.taskText` 同意后外发；附件不进入预设采购配方、示范录制与工作流重放。PDF/Office/音频当前仅登记元数据，不解析正文。
