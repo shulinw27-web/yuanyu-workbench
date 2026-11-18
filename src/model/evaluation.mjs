@@ -18,6 +18,19 @@ export function validatePlanningCases(input){
   return structuredClone(input);
 }
 
+/** M-D6: provider usage is observational. Unreported or malformed tokens stay null and never affect scoring. */
+function normalizeCostTokens(value){
+  if(!plain(value))return null;
+  const count=v=>v===null||v===undefined?null:Number.isSafeInteger(v)&&v>=0?v:null;
+  const promptTokens=count(value.promptTokens),completionTokens=count(value.completionTokens);
+  return promptTokens===null&&completionTokens===null?null:{promptTokens,completionTokens};
+}
+/** Accept a bare plan (synthetic drivers) or a {plan,usage} wrapper (the BYOK gateway). */
+function unwrapPlan(value){
+  if(plain(value)&&Object.prototype.hasOwnProperty.call(value,'plan')&&Object.keys(value).every(key=>key==='plan'||key==='usage'))return {plan:value.plan,usage:normalizeCostTokens(value.usage)};
+  return {plan:value,usage:null};
+}
+
 export function scorePlanningResult(item,result){
   const valid=plain(result)&&typeof result.supported==='boolean'&&[null,'purchase-monthly'].includes(result.recipeId)&&month(result.month)&&Array.isArray(result.questions)&&result.questions.length<=3&&result.questions.every(question=>typeof question==='string'&&question.trim().length>0&&question.length<=300);
   const checks={format:valid,month:valid&&result.month===item.expected.month,decision:false,recipe:false,clarification:false};
@@ -37,19 +50,28 @@ export async function runPlanningEvaluation({suite,mode='offline',allowPaid=fals
   if(mode==='live'&&(!Number.isSafeInteger(maxRequests)||maxRequests<1||maxRequests>validated.cases.length))throw fail('EVAL_BUDGET_INVALID');
   if(mode==='live'&&typeof requestPlan!=='function')throw fail('EVAL_GATEWAY_REQUIRED');
   if(mode==='offline'&&(allowPaid!==false||maxRequests!==undefined))throw fail('EVAL_OFFLINE_ARGUMENT_INVALID');
-  const results=validated.cases.map(item=>({id:item.id,status:'not_run'}));
+  const results=validated.cases.map(item=>({id:item.id,status:'not_run',costTokens:null}));
   let attempted=0,stopReason;
+  const costTotals={promptTokens:0,completionTokens:0};let costReported=0;
+  const addCost=usage=>{
+    if(!usage)return;
+    costReported++;
+    costTotals.promptTokens+=usage.promptTokens??0;
+    costTotals.completionTokens+=usage.completionTokens??0;
+  };
   if(mode==='live')for(let index=0;index<maxRequests;index++){
     if(signal?.aborted){stopReason='CANCELLED';break;}
     const item=validated.cases[index];attempted++;
     try{
       const value=await requestPlan({task:item.input.task,month:item.input.month,...(signal?{signal}:{})});
       if(signal?.aborted)throw fail('CANCELLED');
-      const score=scorePlanningResult(item,value);
-      results[index]={id:item.id,status:score.passed?'passed':'failed',checks:score.checks};
+      const {plan,usage}=unwrapPlan(value);
+      const score=scorePlanningResult(item,plan);
+      addCost(usage);
+      results[index]={id:item.id,status:score.passed?'passed':'failed',checks:score.checks,costTokens:usage};
     }catch(error){
       const code=SAFE_ERRORS.has(error?.code)?error.code:'MODEL_EVALUATION_FAILED';
-      results[index]={id:item.id,status:'error',errorCode:code};
+      results[index]={id:item.id,status:'error',errorCode:code,costTokens:null};
       if(STOP_ERRORS.has(code)||code==='MODEL_EVALUATION_FAILED'){stopReason=code;break;}
     }
   }
@@ -57,7 +79,7 @@ export async function runPlanningEvaluation({suite,mode='offline',allowPaid=fals
   return {
     schemaVersion:1,scope:'purchase_plan_only',mode,status:mode==='offline'?'not_run':stopReason?'stopped':attempted<results.length?'partial':errors?'completed_with_errors':'completed',
     limits:{maxRequests:mode==='live'?maxRequests:0,attemptsPerCase:1},
-    summary:{total:results.length,requestsAttempted:attempted,scored,passed,failed,errors,notRun:results.length-attempted,scorePercent:scored?Math.round(passed/scored*10000)/100:null,coveragePercent:Math.round(scored/results.length*10000)/100},
+    summary:{total:results.length,requestsAttempted:attempted,scored,passed,failed,errors,notRun:results.length-attempted,scorePercent:scored?Math.round(passed/scored*10000)/100:null,coveragePercent:Math.round(scored/results.length*10000)/100,costTokens:costReported?{promptTokens:costTotals.promptTokens,completionTokens:costTotals.completionTokens}:null},
     ...(stopReason?{stopReason}:{}),limitations:['NO_BROWSER_EXECUTION','NOT_GENERAL_BUSINESS_ACCEPTANCE','OFFLINE_IS_NOT_MODEL_VALIDATION'],results
   };
 }

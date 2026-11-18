@@ -123,6 +123,45 @@ test('取消不发起后续请求，未知回复和错误原文不进入报告',
   assert.equal(empty.summary.requestsAttempted,0);assert.equal(empty.summary.notRun,14);
 });
 
+const passingPlan=item=>item.expected.decision==='supported'?plan():plan({supported:false,recipeId:null,questions:item.expected.decision==='clarify'?['请确认目标月份？']:[]});
+
+test('M-D6 live报告逐题与汇总携带usage成本，评分仍只看确定性答案',async()=>{
+  const usage={promptTokens:120,completionTokens:30};
+  const result=await runPlanningEvaluation({suite,mode:'live',allowPaid:true,maxRequests:2,requestPlan:async({task})=>{
+    const item=suite.cases.find(c=>c.input.task===task);return {plan:passingPlan(item),usage};
+  }});
+  assert.equal(result.summary.passed,2);
+  assert.deepEqual(result.summary.costTokens,{promptTokens:240,completionTokens:60});
+  assert.ok(result.results.slice(0,2).every(item=>item.status==='passed'&&item.costTokens.promptTokens===120&&item.costTokens.completionTokens===30));
+  assert.ok(result.results.slice(2).every(item=>item.status==='not_run'&&item.costTokens===null));
+  assert.equal(result.status,'partial');
+});
+
+test('M-D6 成本字段诚实处理未报告与非法usage，绝不改变分数且离线为null',async()=>{
+  const bare=await runPlanningEvaluation({suite,mode:'live',allowPaid:true,maxRequests:1,requestPlan:async()=>plan()});
+  assert.equal(bare.summary.costTokens,null);assert.equal(bare.results[0].costTokens,null);assert.equal(bare.summary.passed,1);
+  const invalid=await runPlanningEvaluation({suite,mode:'live',allowPaid:true,maxRequests:1,requestPlan:async()=>({plan:plan(),usage:{promptTokens:-5,completionTokens:'x',cached:1}})});
+  assert.equal(invalid.results[0].costTokens,null);assert.equal(invalid.summary.costTokens,null);assert.equal(invalid.summary.passed,1);
+  const offline=await runPlanningEvaluation({suite,requestPlan:async()=>{throw Error('never');}});
+  assert.equal(offline.summary.costTokens,null);assert.ok(offline.results.every(item=>item.costTokens===null));
+  // A failed score still reports its usage honestly, and cost sums across all reported requests.
+  const mixed=await runPlanningEvaluation({suite,mode:'live',allowPaid:true,maxRequests:3,requestPlan:async({task})=>{
+    const item=suite.cases.find(c=>c.input.task===task);
+    const bad=item.id===suite.cases[0].id;
+    return {plan:bad?plan({month:'2026-09'}):passingPlan(item),usage:bad?{promptTokens:10,completionTokens:2}:null};
+  }});
+  assert.deepEqual(mixed.summary.costTokens,{promptTokens:10,completionTokens:2});assert.equal(mixed.summary.failed,1);assert.equal(mixed.summary.passed,2);
+});
+
+test('M-D6 网关真实接线把提供方usage透传到报告，密钥与原文不外泄',async t=>{
+  const {file}=await configFixture(t);
+  const report=await runModelEvaluationCLI(live(file,1),{fetchImpl:async()=>new Response(JSON.stringify({usage:{prompt_tokens:77,completion_tokens:13},choices:[{message:{tool_calls:[{function:{name:'propose_workflow_plan',arguments:JSON.stringify({recipeId:'purchase-monthly',month:'2026-10',explanation:'合成响应',needsClarification:false})}}]}}]}))});
+  assert.deepEqual(report.results[0].costTokens,{promptTokens:77,completionTokens:13});
+  assert.deepEqual(report.summary.costTokens,{promptTokens:77,completionTokens:13});
+  assert.equal(report.summary.passed,1);
+  for(const hidden of ['合成响应','synthetic-evaluation-key-value',file])assert.ok(!JSON.stringify(report).includes(hidden));
+});
+
 test('默认CLI输出安全JSON，明确离线未验收，未经批准的live只返回稳定错误码',()=>{
   const script=fileURLToPath(new URL('../scripts/model-eval.mjs',import.meta.url));
   const offline=spawnSync(process.execPath,[script],{encoding:'utf8'});assert.equal(offline.status,0,offline.stderr);

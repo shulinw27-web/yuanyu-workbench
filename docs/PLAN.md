@@ -182,10 +182,10 @@ M0-M3为首轮本机闭环；M4中带勾子项为已实现及限定验证，未�
   - 实施内容：文本消息（排除首条附件消息）字节超阈值（默认 256KB，可配 64KB–1MB；0=禁用）时，把最早 assistant/tool 段（保留最近 6 轮）替换为 synthetic user 摘要消息（`Compacted summary of earlier steps (v1):` 前缀 + ≤4000 字模型摘要，走 gateway 校验）；中段重写、头部前缀不动；每任务 ≤2 次并计 budget `compactions`；二次压缩时此前 synthetic 摘要并入最早段可再压。
   - 验收：新增 `test/context-stability.test.mjs` 同语义字节相等断言、`test/compaction.test.mjs` 阈值触发/头部不变/失效记账；以 P95 字节观测数据决定是否实施。本机合成验证，不等同真实收益。
 
-- [ ] M-D6 W14 验收接线（量级小，可与 M-D7 解耦先做）。
-  - `src/model/evaluation.mjs` 的 `model:eval` live 报告新增 `costTokens:{promptTokens,completionTokens}`（每题+汇总），评分仍为确定性代码、不看生成过程。
-  - 人工纠正统计口径文档化进 TEST_REPORT 附录：人工纠正次数 = `awaiting_review` 终态被用户拒绝次数 + handoff 次数；修正次数 = `budget.used.corrections`；复现口径 = 每任务跑 ≥2 次。
-  - 验收：live 报告含成本字段且口径文档落盘；离线题库仍零模型调用，本机不触发付费请求。与 W14「真实模型连接与独立盲测」交叉——接线完成不代表真实模型质量通过。
+- [ ] M-D6 W14 验收接线（量级小，可与 M-D7 解耦先做）——本机接线完成，真实盲测仍待用户输入。
+  - [x] `src/model/evaluation.mjs` 的 `model:eval` live 报告新增 `costTokens:{promptTokens,completionTokens}`（每题+汇总），评分仍为确定性代码、不看生成过程；`proposeModelPlan` 经可选 `onUsage` 观测回调透传网关已解析用量，未报告/非法/离线为 null。
+  - [x] 人工纠正统计口径文档化进 TEST_REPORT 附录：人工纠正次数 = `awaiting_review` 终态被用户拒绝次数 + handoff 次数；修正次数 = `budget.used.corrections`；复现口径 = 每任务跑 ≥2 次；盲测成本取 `summary.costTokens`。
+  - [x] 本机验收：live 报告含成本字段且口径文档落盘（新增三项 M-D6 回归，20/20）；离线题库仍零模型调用，本机不触发付费请求。与 W14「真实模型连接与独立盲测」交叉——接线完成不代表真实模型质量通过，父项在取得真实盲测证据前不关闭。
 
 - [ ] M-D7 W15 归纳管线（量级大；依赖 M-D2 错误回喂路径与 M-D6 盲测口径）。
   - 新增 `src/agent/induct.mjs`：`induceWorkflowRecipe({demonstration,goal,requestModel,budget,onCheckpoint,signal})` 五步——安全 trace（无页面正文/凭据）输入 → 归纳请求（induction 档 3 请求，必须返回单个 `propose_recipe` 闭集 tool call，自由散文以 `INDUCTION_OUTPUT_INVALID` 拒绝）→ 确定性校验（siteId∈示范站点集、action 的 role/name 被示范过、fill/select 值来自示范值或 ≤3 参数槽）→ 确定性试运行（`replayRecipe` 原站点重放 + `verifyTaskResult` 验证）→ 用户确认（走现有 `agent.skill.save` verified 路径，参数化沿用 `agent.skill.edit`）。

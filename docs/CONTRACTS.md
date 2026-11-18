@@ -113,7 +113,7 @@ UI负责界面文件 src/ui/*；不直接访问Node和文件系统。凭据表�
 
 公共规划题库与纯评分模块只覆盖purchase_plan。runModelEvaluationCLI默认offline：不读取配置/密钥、不构造真实请求，报告not_run/scorePercent:null/networkRequests:0。live必须同时明确--live --allow-paid --config（仓库外模型配置）--max-requests，预算在读取配置前校验；每题仅一次，失败占尝试数，止损错误停止后续调用。
 
-输入仅task/month/signal，预期答案只在本地评分；报告区分requestsAttempted/networkRequests/覆盖率，不回传原始模型输出或秘密。CLI不执行浏览器工具；离线通过或固定规划得分不代表真实模型、页面理解或生产业务验收。
+输入仅task/month/signal，预期答案只在本地评分；报告区分requestsAttempted/networkRequests/覆盖率，不回传原始模型输出或秘密。live报告的每题结果与汇总新增`costTokens:{promptTokens,completionTokens}`（提供方报告的用量，纯观测、不参与评分；未报告/非法/离线为null）。CLI不执行浏览器工具；离线通过或固定规划得分不代表真实模型、页面理解或生产业务验收。人工纠正与修正次数的统计口径见[测试报告](TEST_REPORT.md)附录。
 
 ## M6 记忆、统一工具、结果验证与有限修正（2026-11-13，A/B/C 阶段）
 

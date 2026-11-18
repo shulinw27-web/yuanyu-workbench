@@ -1,5 +1,20 @@
 # 测试与回归报告
 
+## 2026-11-18 M-D6 W14 盲测成本口径与人工纠正统计接线（Harness 第五步）
+
+范围：按[架构设计 v1](../designs/yuanyu-workbench-harness-design-v1.md) §4.6 接线两件事，不改变确定性评分。（1）`src/model/evaluation.mjs` 的 `model:eval` live 报告新增 `costTokens:{promptTokens,completionTokens}`——每题结果（`results[].costTokens`）与汇总（`summary.costTokens`）均携带提供方报告的 token 用量；`proposeModelPlan` 通过可选 `onUsage` 观察回调透传网关已解析的 usage，纯观测、不进入计划或评分。离线模式零模型调用，`costTokens` 一律为 `null`；未报告或非法用量（负数/非整数/非数字）诚实置 `null`，绝不伪造成本。评分仍为确定性代码，只看规划答案、不看生成过程。（2）人工纠正统计口径按附录口径文档落盘。
+
+命令与结果（Node v24.14.1 / Windows）：`test/model-evaluation.test.mjs` 由 17 项增至 20 项，新增三项 M-D6 回归：逐题/汇总成本累计且分数不变、未报告/非法用量保持 null 且离线为 null、网关真实接线把提供方 `prompt_tokens`/`completion_tokens` 透传且不外泄密钥与原文。全部合成数据，未调用真实模型。
+
+### 附录：人工纠正与修正次数的统计口径（M6/W14 真实对照验收的数据定义）
+
+以下口径供真实模型/业务的成功率、费用、人工纠正次数对照评测使用；本机合成回归不产出这些实测数据，接线完成不代表真实模型质量通过。
+
+- **人工纠正次数** = `awaiting_review` 终态被用户拒绝的次数 + `handoff` 次数。数据来自运行记录 `task`/`steps` 的终态与步骤 status（`src/agent/store.mjs`），由评测脚本离线聚合，不在模型上下文内统计。
+- **修正次数** = `budget.used.corrections`（跨 attempt 累计的单轮修正计数，见 budget v2）；与「人工纠正次数」分列，二者不可相加或互相替代。
+- **盲测 token 成本** = `model:eval` live 报告的 `summary.costTokens`（`promptTokens`/`completionTokens` 之和）；离线 `not_run` 报告成本为 `null`，不等于零成本或已通过。
+- **复现口径** = 每任务重复运行 ≥2 次后取统计，单次结果不作为稳定结论；同一任务的多次运行须明确各自终态与纠正/交接计数，避免把偶发成功记为稳定能力。
+
 日期：2026-11-16。状态：M7个人开源版范围调整已实施并验证——桌面版移除登录注册/推广额度/公司流程界面，自定义模型连接为唯一模型入口；工作区锁PID复用缺陷修复（曾导致启动白屏）。`npm test` 260/260通过（含4项锁映像复用回归），`npm run check` 123文件通过，`npm run test:desktop` 8/8阶段通过（desktop-smoke公司UI流程改为元素不存在断言+IPC层校验，product-ui-smoke重写为个人开源版断言，product-integration-smoke保留真实HTTP账号安全回归）。此前记录的M5/M6组件验证仍真实有效，仅桌面产品不再接入展示。真实模型/业务效果对照、生产与尚未开发部分按唯一清单保留。
 
 ## 2026-11-18 完全独立个人向收敛验证（M11）

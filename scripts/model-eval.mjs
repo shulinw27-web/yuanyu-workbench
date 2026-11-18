@@ -38,7 +38,14 @@ export async function runModelEvaluationCLI(args,{gateway=proposeModelPlan,fetch
   }
   let networkRequests=0;
   const report=await runPlanningEvaluation({suite,mode:options.mode,allowPaid:options.allowPaid??false,maxRequests:options.maxRequests,signal,
-    requestPlan:async({task,month,signal:requestSignal})=>gateway({file:options.config,text:task,month,consent:true,signal:requestSignal,fetchImpl:async(...parameters)=>{networkRequests++;return fetchImpl(...parameters);}})
+    requestPlan:async({task,month,signal:requestSignal})=>{
+      // M-D6: capture provider-reported token usage observationally. It never influences the plan or its score.
+      let usage=null;
+      const plan=await gateway({file:options.config,text:task,month,consent:true,signal:requestSignal,
+        onUsage:value=>{if(value&&typeof value==='object')usage={promptTokens:value.promptTokens??null,completionTokens:value.completionTokens??null};},
+        fetchImpl:async(...parameters)=>{networkRequests++;return fetchImpl(...parameters);}});
+      return {plan,usage};
+    }
   });
   return {...report,networkRequests};
 }
