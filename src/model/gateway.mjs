@@ -134,6 +134,27 @@ export async function createBrowserModelRequester({file,profiles,consent,fetchIm
     return {message,usage};
   };
 }
+/** M-D7: induction-only requester. Sends task text + a scrubbed demo trace; allows only propose_recipe. Never accepts page content or browser tools. */
+export async function createInductionRequester({file,profiles,consent,fetchImpl=fetch,allowTestLoopback=false}) {
+  if(consent?.taskText!==true)throw fail('MODEL_CONSENT_REQUIRED');
+  const source=modelSource({file,profiles,allowTestLoopback}),profile=configured(await source.read());
+  if(!profile.enabled)throw fail('MODEL_DISABLED');
+  const locked=fingerprint(profile);
+  return async function requestInduction({messages,tools,signal}) {
+    if(signal?.aborted)throw fail('CANCELLED');
+    const current=await source.read();
+    if(!current||fingerprint(current)!==locked)throw fail('MODEL_CONFIG_CHANGED');
+    if(!Array.isArray(messages)||messages.length<2||messages.length>6||!Array.isArray(tools)||tools.length!==1)throw fail('MODEL_INPUT_INVALID');
+    for(const message of messages)if(!plain(message)||!['system','user','assistant'].includes(message.role)||typeof message.content!=='string'||!message.content.trim()||Buffer.byteLength(message.content,'utf8')>200000||SENSITIVE_TASK.test(message.content))throw fail('MODEL_INPUT_INVALID');
+    if(tools[0]?.type!=='function'||tools[0].function?.name!=='propose_recipe'||typeof tools[0].function.parameters!=='object')throw fail('MODEL_INPUT_INVALID');
+    const result=await source.request(current,{body:{messages,tools,tool_choice:'auto'},fetchImpl,signal});
+    const message=result?.choices?.[0]?.message,usage=parseUsage(result?.usage);
+    if(!plain(message)||message.content!==undefined&&message.content!==null&&typeof message.content!=='string'||message.tool_calls!==undefined&&message.tool_calls!==null&&!Array.isArray(message.tool_calls))throw fail('MODEL_RESPONSE_INVALID');
+    if(signal?.aborted)throw fail('CANCELLED');
+    const finalProfile=await source.read();if(!finalProfile||fingerprint(finalProfile)!==locked)throw fail('MODEL_CONFIG_CHANGED');
+    return {message,usage};
+  };
+}
 const tool={type:'function',function:{name:'propose_workflow_plan',description:'Return a proposed plan only. This does not execute tools. Use null recipe when no available workflow fits.',parameters:{type:'object',additionalProperties:false,properties:{recipeId:{type:['string','null'],enum:['purchase-monthly',null]},month:{type:'string'},explanation:{type:'string'},needsClarification:{type:'boolean'},questions:{type:'array',items:{type:'string'}}},required:['recipeId','month','explanation','needsClarification']}}};
 export async function proposeModelPlan({file,profiles,text,month,consent,fetchImpl=fetch,allowTestLoopback=false,signal,onUsage}) {
   if(consent!==true)throw fail('MODEL_CONSENT_REQUIRED');

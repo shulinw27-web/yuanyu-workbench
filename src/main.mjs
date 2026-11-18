@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { startMockSystems } from './mock/systems.mjs';
 import {startInteractiveMockSite} from './mock/interactive-fixture.mjs';
 import { createController, safeError } from './controller.mjs';
+import { isSameFileUrl } from './core/file-url.mjs';
 
 const here=dirname(fileURLToPath(import.meta.url));
 if(process.argv.includes('--smoke'))console.log('SMOKE: initializing desktop');
@@ -42,17 +43,17 @@ app.whenReady().then(async()=>{
     const uiUrl=pathToFileURL(join(here,'ui','index.html')).href;
     controller=await createController({dataDir,cryptoAdapter,systems:mocks.systems,BrowserWindow,builtinSites:[interactiveMock.site],copyText:text=>clipboard.writeText(text),openPath:async path=>{const error=await shell.openPath(path);if(error)throw new Error('ARTIFACT_OPEN_FAILED');},onUpdate:snapshot=>{if(win && !win.isDestroyed())win.webContents.send('workbench:update',snapshot);}});
     ipcMain.handle('workbench:invoke',async(event,action,payload)=>{
-      if(event.sender!==win.webContents || event.senderFrame!==win.webContents.mainFrame || event.senderFrame.url!==uiUrl)return {ok:false,error:{code:'IPC_DENIED',message:'请求来源不受信任。'}};
+      if(event.sender!==win.webContents || event.senderFrame!==win.webContents.mainFrame || !isSameFileUrl(event.senderFrame.url,uiUrl))return {ok:false,error:{code:'IPC_DENIED',message:'请求来源不受信任。'}};
       try{return {ok:true,data:await controller.invoke(action,payload)};}catch(error){return {ok:false,error:safeError(error)};}
     });
     ipcMain.handle('workbench:pickDirectory',async(event)=>{
-      if(event.sender!==win.webContents || event.senderFrame!==win.webContents.mainFrame || event.senderFrame.url!==uiUrl)return {ok:false,error:{code:'IPC_DENIED',message:'请求来源不受信任。'}};
+      if(event.sender!==win.webContents || event.senderFrame!==win.webContents.mainFrame || !isSameFileUrl(event.senderFrame.url,uiUrl))return {ok:false,error:{code:'IPC_DENIED',message:'请求来源不受信任。'}};
       const picked=await dialog.showOpenDialog(win,{title:'选择项目文件夹',properties:['openDirectory','createDirectory']});
       if(picked.canceled||!picked.filePaths.length)return {ok:true,data:{cancelled:true}};
       return {ok:true,data:{cancelled:false,path:picked.filePaths[0]}};
     });
     win.webContents.setWindowOpenHandler(()=>({action:'deny'}));
-    win.webContents.on('will-navigate',(event,url)=>{if(url!==uiUrl)event.preventDefault();});
+    win.webContents.on('will-navigate',(event,url)=>{if(!isSameFileUrl(url,uiUrl))event.preventDefault();});
     win.webContents.session.setPermissionRequestHandler((_webContents,_permission,callback)=>callback(false));
     await win.loadURL(uiUrl);
   }

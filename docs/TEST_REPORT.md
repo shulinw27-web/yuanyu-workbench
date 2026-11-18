@@ -1,5 +1,15 @@
 # 测试与回归报告
 
+## 2026-11-18 M-D7 W15 归纳管线与 Windows 文件 URL 来源校验修复
+
+范围：按[架构设计 v1](../designs/yuanyu-workbench-harness-design-v1.md) §4.7 落地人工示范→数据配方归纳：新增 `src/agent/induct.mjs`（安全 trace 输入、单个 `propose_recipe` 闭集 tool call、按示范站点/控件/值做确定性校验、系统派生 open 步骤、`replayRecipe`+`verifyTaskResult` 确定性试运行、一次失败回喂、用户确认），`src/model/gateway.mjs` 新增只允许 `propose_recipe` 的 `createInductionRequester`，`src/controller.mjs` 新增 `agent.induct` / `agent.induct.confirm` / `agent.induct.discard`，`src/agent/store.mjs` 新增 `saveInducedSkill`，`src/ui/app.js` 新增候选确认视图。产物是可核对的数据步骤，不是代码；重放仍走四工具 schema、站点白名单、角色/名称唯一匹配与 consent 全链。
+
+命令与结果（Node v24.14.1 / Windows）：`npm test` **239/239 通过、无跳过**（M-D7 新增 `test/induct.test.mjs` 五项：五步管线与 usage 透传、闭集 schema 拒绝散文/多调用/错名/额外字段、站点/角色/名称/值确定性校验与 ≤3 参数槽、试运行失败回喂一次后成功与二次失败终止、凭据文本/非法示范/非 induction 预算档拒绝；`test/induct-controller.test.mjs` 两项：示范→归纳→确认→保存→本机重放全程零真实模型，身份切换后候选不跨身份泄露；另有 `test/file-url.test.mjs` 两项）；`npm run check` 通过，检查 **114 个文件**；`npm run test:desktop` **8/8 阶段连续两轮通过**，含真实 UI 人工示范录制→保存→参数化重放→旧 ref 拒绝→仅当前步骤重新观察一次。全部合成数据，未调用真实模型、未执行业务写入。
+
+桌面验证期间定位并修复两个既有问题（均非 M-D7 回归）：① Windows 上 `pathToFileURL` 由 `import.meta.url` 推导时保留小写盘符（`file:///d:/...`），Electron 加载后帧 URL 规范化为大写（`file:///D:/...`），主进程与 desktop/demonstration/agent 三个冒烟脚本的来源校验因此误拒自己的渲染器，表现为 `IPC_DENIED`、`boot-status` 显示"请求来源不受信任"；新增 `src/core/file-url.mjs` 的 `isSameFileUrl`，仅在两端均为 `file://` 时按平台规范化路径（Windows 盘符/路径大小写不敏感），远程 URL 与非字符串一律拒绝，主进程 IPC 与 `will-navigate` 及三个冒烟脚本统一使用。② 示范冒烟在快照重绘期间读取 `.demonstration-act` 等控件会命中 `null`，改为同一渲染回合内原子提交并在就绪判定中容忍元素暂时消失，未放宽任何产品侧权限。修复前同一套代码在 HEAD 基线与修改版均可复现失败；修复后连续两轮全部阶段通过。
+
+证据边界：归纳请求只有用户明确同意任务文本、且本人已配置 Chat Completions 兼容模型时才发生；usage 随候选进入 `snapshot.induction` 供核对，不参与评分。真人评估、真实模型归纳质量、任意手势录制与任意业务学习仍未验收，不因本机零模型回归而勾选 W14/W15 父项。
+
 ## 2026-11-18 M-D6 W14 盲测成本口径与人工纠正统计接线（Harness 第五步）
 
 范围：按[架构设计 v1](../designs/yuanyu-workbench-harness-design-v1.md) §4.6 接线两件事，不改变确定性评分。（1）`src/model/evaluation.mjs` 的 `model:eval` live 报告新增 `costTokens:{promptTokens,completionTokens}`——每题结果（`results[].costTokens`）与汇总（`summary.costTokens`）均携带提供方报告的 token 用量；`proposeModelPlan` 通过可选 `onUsage` 观察回调透传网关已解析的 usage，纯观测、不进入计划或评分。离线模式零模型调用，`costTokens` 一律为 `null`；未报告或非法用量（负数/非整数/非数字）诚实置 `null`，绝不伪造成本。评分仍为确定性代码，只看规划答案、不看生成过程。（2）人工纠正统计口径按附录口径文档落盘。

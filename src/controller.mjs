@@ -9,7 +9,9 @@ import {createAgentRuntime} from './agent/runtime.mjs';
 import {createMemoryStore} from './memory/store.mjs';
 import {createProjectStore} from './project/store.mjs';
 import {createDemonstration} from './agent/demonstration.mjs';
-import {createBrowserModelRequester,probeModelProfile} from './model/gateway.mjs';
+import {createBrowserModelRequester,createInductionRequester,probeModelProfile} from './model/gateway.mjs';
+import {induceWorkflowRecipe} from './agent/induct.mjs';
+import {createTaskBudget} from './agent/budget.mjs';
 import {createModelProfiles,PROVIDERS} from './model/profiles.mjs';
 import {createDemoWrite} from './runtime/demo-write.mjs';
 import { mkdir, realpath, lstat, unlink,readFile,writeFile,rename } from 'node:fs/promises';
@@ -43,6 +45,7 @@ const messages = {
   ATTACHMENT_LIMIT:'附件最多 6 个。',ATTACHMENT_INVALID:'附件格式无效。',ATTACHMENT_NAME_INVALID:'附件名称无效，不能包含路径分隔符。',
   ATTACHMENT_TYPE_UNSUPPORTED:'仅支持图片、PDF、Office 文档、文本、CSV/JSON 与音频附件，不支持视频。',ATTACHMENT_VIDEO_UNSUPPORTED:'不支持视频附件，请选择其他文件形式。',
   ATTACHMENT_TOO_LARGE:'附件过大：单个不超过 3MB，合计不超过 9MB。',ATTACHMENT_DATA_INVALID:'附件内容无法验证。',ATTACHMENT_DUPLICATE:'附件名称重复。',
+  INDUCTION_OUTPUT_INVALID:'归纳结果未通过闭集校验，没有保存任何流程；请重新示范后重试。',INDUCTION_TRIAL_FAILED:'归纳配方在确定性试运行后仍失败，已停止，没有自动改写流程。',INDUCTION_SOURCE_INVALID:'请先用人工示范完成一个只读工作流，再据此归纳。',INDUCTION_CONSENT_REQUIRED:'归纳需要你明确同意把示范步骤与本次目标发送至本机模型。',
   PROJECT_INPUT_INVALID:'项目名称或路径无效，请检查后重试。',PROJECT_UNSAFE_PATH:'项目目录必须是仓库外的本地目录，且路径不能包含符号链接。',PROJECT_DIRECTORY_NOT_EMPTY:'目标位置已存在非空目录；请换一个空位置，或改用“从本地文件夹导入”。',PROJECT_DIRECTORY_MISSING:'所选文件夹不存在或不是目录，请重新选择。',PROJECT_DUPLICATE:'该文件夹已登记为项目，不能重复导入。',PROJECT_NOT_FOUND:'没有找到这个项目，请刷新后重试。',PROJECT_VERSION_CONFLICT:'项目列表已更新，请刷新后重试。',PROJECT_LOCKED:'项目存储正由其他进程使用。',PROJECT_STORE_INVALID:'项目数据无法验证，请保留原文件后检查。',PROJECT_LIMIT:'项目数量已达本机存储上限。',PROJECT_IDENTITY_INVALID:'项目身份无效。'
 };
 export function safeError(error) {
@@ -51,8 +54,8 @@ export function safeError(error) {
   return {code,message:messages[code] || '操作未完成，请核对当前身份、系统账号及执行状态后重试。'};
 }
 
-export async function createController({dataDir,cryptoAdapter,systems,BrowserWindow,builtinSites=[],onUpdate=()=>{},browserShow=true,openPath=async()=>{},planningGateway=proposeModelPlan,agentRequesterFactory,interactiveFactory,modelProbe=probeModelProfile}) {
-  let identity=identities.alice, workspace, active=null, starting=false, startPending=null, switching=false, pending=null,planning=null;
+export async function createController({dataDir,cryptoAdapter,systems,BrowserWindow,builtinSites=[],onUpdate=()=>{},browserShow=true,openPath=async()=>{},planningGateway=proposeModelPlan,agentRequesterFactory,inductRequesterFactory,interactiveFactory,modelProbe=probeModelProfile}) {
+  let identity=identities.alice, workspace, active=null, starting=false, startPending=null, switching=false, pending=null,planning=null,inductionResult=null;
   let siteRegistry,customSites=[],currentSystems=systems,interactive=null,agentStore,agentRuntime,demonstration,configurationPending=null,profiles,demoWrite,memoryStore,projectStore;
   const trustedSites=builtinSites.map(site=>({...site,builtin:true,revision:1}));
   const agentSites=async()=>[...trustedSites,...await siteRegistry.list()];
@@ -129,6 +132,7 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     try{base.writeDemo=await writeSource.snapshot();}catch{base.writeDemo={records:[],approvals:[],unavailable:true};}
     if(owner!==identity||writeSource!==demoWrite)return snapshot();
     base.demonstration=demo.snapshot();
+    base.induction=inductionResult?{sourceTaskId:inductionResult.sourceTaskId,candidate:inductionResult.candidate,usage:inductionResult.usage}:null;
     base.memory=await memories.snapshot();
     const projects=projectStore;
     base.projects=await projects.snapshot();
@@ -309,6 +313,39 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
       case 'agent.skill.edit':requireIdle();result=await agentStore.editSkill(payload);break;
       case 'agent.skill.pin':requireIdle();result=await agentStore.setSkillPinned(payload.id,payload.pinned);break;
       case 'agent.skill.delete':requireIdle();result=await agentStore.deleteSkill(payload.id);break;
+      case 'agent.induct':{
+        requireIdle();
+        if(payload.consent?.taskText!==true)throw new Error('INDUCTION_CONSENT_REQUIRED');
+        const owner=identity,request=new AbortController();planning=request;
+        try{
+          const source=(await agentStore.listTasks()).find(task=>task.id===payload.sourceTaskId);
+          if(!source||source.status!=='completed'||source.execution!=='demonstration'||!Array.isArray(source.trace)||!source.trace.length)throw new Error('INDUCTION_SOURCE_INVALID');
+          if(identity!==owner||planning!==request||request.signal.aborted)throw new Error('CANCELLED');
+          const session=await getBrowser(owner);
+          const check=async()=>{
+            if(identity!==owner||switching||request.signal.aborted)throw new Error('AGENT_CONTEXT_CHANGED');
+            const sites=await agentSites();
+            if(!source.siteBindings.every(binding=>sites.some(site=>site.id===binding.id&&site.origin===binding.origin&&site.revision===binding.revision)))throw new Error('AGENT_BINDINGS_CHANGED');
+            return true;
+          };
+          const browser={open:id=>session.open(id),observe:id=>session.observe(id),handoff:id=>session.handoff(id),act:(id,action)=>session.act(id,action)};
+          const requestModel=inductRequesterFactory
+            ? await inductRequesterFactory({file:modelFile(),consent:{taskText:true},signal:request.signal})
+            : await createInductionRequester({file:modelFile(),...(await profileSelection(profiles)),consent:{taskText:true},signal:request.signal});
+          const outcome=await induceWorkflowRecipe({demonstration:{trace:source.trace,siteBindings:source.siteBindings,mode:source.mode,browser,check},
+            goal:payload.goal||source.goal,requestModel,budget:createTaskBudget({profile:'induction'}),signal:request.signal});
+          if(identity!==owner||planning!==request||request.signal.aborted)throw new Error('CANCELLED');
+          inductionResult={sourceTaskId:source.id,candidate:outcome.candidate,usage:outcome.usage};
+          await notify();return {status:outcome.status,steps:outcome.candidate.trace.length,modelRequests:outcome.modelRequests,corrections:outcome.corrections};
+        }finally{if(planning===request)planning=null;await notify();}
+      }
+      case 'agent.induct.confirm':{
+        requireIdle();if(!inductionResult)throw new Error('INDUCTION_SOURCE_INVALID');
+        const pendingInduct=inductionResult;
+        result=await agentStore.saveInducedSkill({taskId:pendingInduct.sourceTaskId,name:payload.name,pinned:payload.pinned,description:pendingInduct.candidate.description,recipe:pendingInduct.candidate.trace});
+        inductionResult=null;break;
+      }
+      case 'agent.induct.discard':requireIdle();inductionResult=null;await notify();return {discarded:true};
       case 'model.status':return (await snapshot()).model;
       case 'model.configure':{requireIdle();const file=await ensureModelConfig(modelFile());await openPath(file);return {opened:true};}
       case 'task.modelPlan':{
@@ -357,7 +394,7 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
           const nextIdentity=identities[payload.userId];
           const nextRegistry=createSiteRegistry({dataDir,identity:nextIdentity}),nextSites=await nextRegistry.list(),nextSystems=systemDictionary(nextSites);
           const nextWorkspace=await createWorkspace({dataDir,cryptoAdapter,identity:nextIdentity,systems:nextSystems});
-          await nextWorkspace.snapshot();await cancel();await closeBrowser();pending=null;identity=nextIdentity;workspace=nextWorkspace;siteRegistry=nextRegistry;customSites=nextSites;currentSystems=nextSystems;await initialize();result=await snapshot();
+          await nextWorkspace.snapshot();await cancel();await closeBrowser();pending=null;inductionResult=null;identity=nextIdentity;workspace=nextWorkspace;siteRegistry=nextRegistry;customSites=nextSites;currentSystems=nextSystems;await initialize();result=await snapshot();
         }finally{switching=false;}break;
       }
       case 'artifact.open': {

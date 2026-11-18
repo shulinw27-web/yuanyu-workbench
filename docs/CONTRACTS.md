@@ -146,3 +146,12 @@ UI负责界面文件 src/ui/*；不直接访问Node和文件系统。凭据表�
 - 附件文件按任务写入 `agents/<company>/<user>/attachments/<taskId>/`，权限 600；读取时校验非符号链接且大小与任务记录一致，篡改或缺失一律拒绝（`AGENT_UNSAFE_PATH`）。任务记录仅保存附件元数据白名单（id/name/mediaType/kind/size），不含文件内容。
 - 模型消息中仅**首个用户消息**允许 parts 数组：首 part 必须为任务文本，其余为 `image_url`（仅 data:image/(png|jpeg|webp|gif|bmp) 前缀，≤5M 字符）或 `text`（≤25000 字，过敏感词校验）；其余用户消息保持纯文本。后续轮次的历史消息中原样保留首条 parts。合成 Mock 模式只记录附件，不把附件交给合成请求器。
 - 同意边界：附件随任务文本在 `consent.taskText` 同意后外发；附件不进入预设采购配方、示范录制与工作流重放。PDF/Office/音频当前仅登记元数据，不解析正文。
+
+## M-D7 示范归纳管线与本机文件 URL 校验（2026-11-18）
+
+- `induceWorkflowRecipe({demonstration,goal,requestModel,budget,onCheckpoint,signal})` 输入 `demonstration={trace,siteBindings,mode,browser,check,getCorrectionsUsed?,onRepair?}`；trace 先经 `validateAgentTrace` 复核（无页面正文、凭据、动态 ref）。模型必须返回**单个** `propose_recipe` function tool call，参数为 `{name,description?,steps:[{siteId,action,parameterSlots?}]}`；散文、多调用、错名、schema 外字段一律 `INDUCTION_OUTPUT_INVALID`。每步 siteId、action.role/name 必须来自示范；fill/select 值必须为示范值或该步声明的 `{{slot}}` 参数槽（全局 ≤3 个，且该控件须有示范值）；`open` 步骤由系统按站点集推导，不接受模型自写。返回 `{status:'awaiting_confirmation',candidate,usage,budgetUsed,modelRequests,corrections}`，候选含 `schemaVersion:1,kind:'browser',trace,parameterSlots,verification,replay`；不自动保存。
+- 试运行复用 `replayRecipe`/`verifyTaskResult` 在原站点执行，动作前后复验身份、站点 origin/revision、取消信号；非立即停止码失败时追加一次结构化反馈并重试一次，二次失败以 `INDUCTION_TRIAL_FAILED`（或原始验证码）终止，不自动改写配方。停止码见 `INDUCTION_FATAL_CODES`，与 recovery-policy 的归纳停止项一致。
+- `createInductionRequester({file,profiles,consent,fetchImpl,allowTestLoopback})` 仅接受 `consent.taskText===true`；请求前后比对模型配置指纹，消息 2—6 条且均为纯文本并过敏感串检查，tools 只能有一个 `propose_recipe`；返回 `{message,usage}`，不暴露浏览器工具或页面内容。它与只允许四个 `browser_*` 工具的 `createBrowserModelRequester` 是两条互不混用的通道。
+- controller 动作：`agent.induct{sourceTaskId,goal?,consent:{taskText:true}}` 只接受本人 `execution:'demonstration'` 且 `status:'completed'`、带安全 trace 的源任务；整个归纳过程占用 planning 互斥并经 `identity`/站点修订/取消复验，`snapshot.induction` 公开 `{sourceTaskId,candidate,usage}`，身份切换即清空。`agent.induct.confirm{name,pinned}` 调 `agentStore.saveInducedSkill`，重新校验来源任务已完成、recipe 白名单与站点绑定，走个人浏览器 Skill 同一存储路径；`agent.induct.discard{}` 仅丢弃当前候选，不写磁盘。
+- `src/core/file-url.mjs` 的 `isSameFileUrl(actual,expected)` 用于主进程 IPC 来源校验与 `will-navigate`：仅当两端为 `file://` 且解析到同一本机文件时为真；Windows 下盘符与路径大小写不敏感（Electron 返回的 `file:///D:/...` 与 `pathToFileURL` 推导的 `file:///d:/...` 视为同一来源），非 Windows 保留路径大小写敏感，远程 URL、异常 URL 与非字符串一律拒绝。desktop/demonstration/agent 三个冒烟脚本的帧来源校验采用同一函数，不放宽发帧窗口与 mainFrame 校验。
+

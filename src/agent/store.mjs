@@ -568,6 +568,28 @@ export function createAgentStore({ dataDir, identity: inputIdentity } = {}) {
         return clone(skill);
       });
     },
+    // M-D7: persist an induction-confirmed data recipe. The recipe is revalidated through the
+    // same trace whitelist as a demonstrated task; source stays a completed task of this identity.
+    saveInducedSkill(input) {
+      return operation(async (state, save) => {
+        fields(input, ['taskId', 'name', 'recipe', 'pinned', 'description']);
+        const task = taskById(state, input.taskId);
+        assert(task.status === 'completed', 'AGENT_TASK_NOT_COMPLETED', '归纳来源任务尚未完成。');
+        const name = text(input.name, 100).trim();
+        assert(name && (input.pinned === undefined || typeof input.pinned === 'boolean'), 'AGENT_INPUT_INVALID', '技能名称或置顶状态无效。');
+        const recipe = trace(input.recipe, task.siteBindings);
+        assert(recipe.length > 0, 'AGENT_TRACE_REQUIRED', '归纳配方缺少可安全回放的步骤。');
+        assert(state.skills.length < 1000, 'AGENT_STORE_LIMIT', '本机浏览器技能数量已达上限。');
+        const timestamp = now();
+        const skill = { id: randomUUID(), kind: 'browser', name, pinned: input.pinned ?? false, version: 1,
+          template: { goalTemplate: input.description ? `${task.goal}\n${text(input.description, 300)}` : task.goal, siteBindings: clone(task.siteBindings), recipe },
+          source: { taskId: task.id }, createdAt: timestamp, updatedAt: timestamp };
+        validateSkill(skill);
+        state.skills.push(skill);
+        await save();
+        return clone(skill);
+      });
+    },
     setSkillPinned(id, pinned) {
       return operation(async (state, save) => {
         assert(typeof pinned === 'boolean', 'AGENT_INPUT_INVALID', '置顶状态必须为布尔值。');

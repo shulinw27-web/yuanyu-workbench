@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createController, safeError } from '../src/controller.mjs';
 import { startInteractiveMockSite } from '../src/mock/interactive-fixture.mjs';
+import { isSameFileUrl } from '../src/core/file-url.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -137,7 +138,7 @@ export async function runAgentSmoke({ BrowserWindow, cryptoAdapter, systems, dat
       onUpdate: (state) => { updates.push(state); if (!ui.isDestroyed()) ui.webContents.send('workbench:update', state); },
     });
     ipcMain.handle('workbench:invoke', async (event, action, payload) => {
-      if (event.sender !== ui.webContents || event.senderFrame !== ui.webContents.mainFrame || event.senderFrame.url !== uiUrl) {
+      if (event.sender !== ui.webContents || event.senderFrame !== ui.webContents.mainFrame || !isSameFileUrl(event.senderFrame.url, uiUrl)) {
         return { ok: false, error: { code: 'IPC_DENIED', message: '请求来源不受信任。' } };
       }
       acceptedActions.push(action);

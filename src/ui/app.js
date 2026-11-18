@@ -349,6 +349,7 @@ function renderRuns() {
   $('#history-nav-count').textContent = String(allRuns.length);
   const current = allRuns.find((run) => ['running', 'awaiting_user'].includes(run.status)) || allRuns.find((run) => run.id === state.activeRunId);
   if (current) active.append(current.kind === 'browser' ? renderAgentTask(current) : renderRunPanel(current));
+  const induction = renderInduction(); if (induction) active.append(induction);
   $('#view-workspace').classList.toggle('has-conversation', Boolean(state.plan || current || state.planning));
   $('#conversation-request').textContent = state.request;
   $('#conversation-request').hidden = !state.request || (!state.plan && !current && !state.planning);
@@ -369,6 +370,48 @@ function renderRuns() {
   for (const run of allRuns.slice(0, 7)) {
     sidebar.append(button(taskTitle(run), 'sidebar-run', () => { state.activeRunId = run.id; state.request = ''; state.plan = null; navigate('workspace', true); render(); }));
   }
+}
+
+function renderInduction() {
+  const pending = state.snapshot?.induction;
+  if (!pending || !pending.candidate) return null;
+  const candidate = pending.candidate;
+  const box = element('section', 'run-panel induction-card');
+  box.setAttribute('aria-label', '归纳结果确认');
+  const toolText = { open: '打开站点', observe: '读取页面', click: '只读点击', fill: '填写条件', select: '选择条件' };
+  const steps = list(candidate.trace);
+  append(box,
+    element('h3', '', '归纳出的只读工作流'),
+    element('p', 'run-caption', `由人工示范归纳 · ${steps.length} 步 · 已在原站点完成确定性试运行（${({ verified: '确定性校验通过', needs_review: '需你核对' })[candidate.verification?.status] || '待核对'}）`));
+  if (candidate.description) box.append(element('p', 'agent-message', candidate.description));
+  const listBox = element('div', 'run-steps');
+  for (const step of steps) listBox.append(append(element('div', 'run-step completed'), element('span', 'step-marker', '✓'), append(element('div'), element('strong', '', toolText[step.tool] || step.tool), element('span', 'form-note', `${step.siteId}${step.locator?.name ? ` · ${step.locator.name}` : ''}`))));
+  box.append(listBox);
+  if (list(candidate.parameterSlots).length) box.append(element('p', 'form-note', `参数槽：${candidate.parameterSlots.join('、')}（保存后可像其他工作流一样编辑默认值）`));
+  box.append(element('p', 'form-note', '归纳产物是可核对的数据步骤，不是可执行代码；保存后仍须通过四工具闭集、站点白名单与逐次同意的全链。任意手势录制与业务规则学习不在范围。'));
+  const actions = append(element('div', 'inline-actions'),
+    button('保存为工作流', 'button primary small', () => openInductionSaveDialog(), { disabled: isLocked() }),
+    button('放弃', 'button secondary small', () => mutation('agent.induct.discard', {}, '已放弃本次归纳。'), { disabled: isLocked() }));
+  box.append(actions);
+  return box;
+}
+
+function openInductionSaveDialog() {
+  if (isLocked()) return;
+  $('#save-workflow-form').reset();
+  $('#save-run-id').value = '';
+  $('#save-dialog').dataset.taskKind = 'induction';
+  $('#workflow-name').value = state.snapshot?.induction?.candidate?.name || '';
+  $('#workflow-pinned').checked = false;
+  $('#save-error').hidden = true;
+  $('#save-dialog').showModal();
+  $('#workflow-name').focus();
+}
+
+function startInduction(task) {
+  if (isLocked()) return;
+  confirmAction('从示范归纳工作流', '将这次人工示范的安全步骤与本次目标发送至你配置的本机模型，归纳为可核对的数据配方，并在原站点做一次确定性试运行。不会执行业务写入，也不会保存页面正文或凭据。', '开始归纳',
+    () => mutation('agent.induct', { sourceTaskId: task.id, goal: task.goal, consent: { taskText: true } }, '归纳完成，请核对结果后保存。'), true);
 }
 
 function renderDemonstration(task) {
@@ -555,6 +598,7 @@ function renderAgentTask(task) {
     const saved = agentSkills().some((skill) => skill.sourceTaskId === task.id || skill.taskId === task.id || skill.source?.taskId === task.id);
     const copy = append(element('div'), element('strong', '', saved ? '已保存为浏览器工作流' : '把这次方法保存下来'), '只保存任务说明、授权站点和步骤，不保存页面内容或凭据。');
     panel.append(append(element('div', 'save-suggestion'), copy, button(saved ? '查看工作流' : '保存为浏览器工作流', 'button subtle small', () => saved ? navigate('workflows', true) : openAgentSaveDialog(task), { disabled: state.actionPending })));
+    if (taught) panel.append(append(element('div', 'save-suggestion'), append(element('div'), element('strong', '', '从这次示范归纳'), '让模型把安全步骤整理成可复用的只读配方，并在原站点试运行核对。'), button('从示范归纳工作流', 'button subtle small induction-start', () => startInduction(task), { disabled: isLocked() })));
   }
   return panel;
 }
@@ -1396,8 +1440,12 @@ $('#save-workflow-form').addEventListener('submit', async (event) => {
   $('#save-error').hidden = true;
   render();
   try {
-    const isBrowserTask = $('#save-dialog').dataset.taskKind === 'browser';
-    await invoke(isBrowserTask ? 'agent.skill.save' : 'workflow.save', isBrowserTask ? { taskId: $('#save-run-id').value, name, pinned: $('#workflow-pinned').checked } : { runId: $('#save-run-id').value, name, pinned: $('#workflow-pinned').checked });
+    const taskKind = $('#save-dialog').dataset.taskKind;
+    const isInduction = taskKind === 'induction', isBrowserTask = taskKind === 'browser';
+    const payload = isInduction ? { name, pinned: $('#workflow-pinned').checked }
+      : isBrowserTask ? { taskId: $('#save-run-id').value, name, pinned: $('#workflow-pinned').checked }
+      : { runId: $('#save-run-id').value, name, pinned: $('#workflow-pinned').checked };
+    await invoke(isInduction ? 'agent.induct.confirm' : isBrowserTask ? 'agent.skill.save' : 'workflow.save', payload);
     await refresh();
     $('#save-dialog').close();
     toast(isBrowserTask ? '浏览器工作流已保存，可复用已授权站点与步骤。' : '工作流已保存，下次可以更换月份再运行。');

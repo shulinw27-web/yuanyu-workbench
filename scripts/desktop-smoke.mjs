@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createController } from '../src/controller.mjs';
 import { createBrowserDriver } from '../src/browser/driver.mjs';
 import {backupWorkspace,restoreWorkspace} from '../src/runtime/backup.mjs';
+import {isSameFileUrl} from '../src/core/file-url.mjs';
 
 const root=join(dirname(fileURLToPath(import.meta.url)),'..');
 const samplePassword='demo123';
@@ -91,7 +92,7 @@ export async function runDesktopSmoke({BrowserWindow,cryptoAdapter,systems,dataD
   const uiController=await createController({dataDir,cryptoAdapter,systems,BrowserWindow,browserShow:false,onUpdate:s=>{if(!ui.isDestroyed())ui.webContents.send('workbench:update',s);}});
   const uiUrl=pathToFileURL(join(root,'src','ui','index.html')).href;
   ipcMain.handle('workbench:invoke',async(event,name,payload)=>{
-    if(event.sender!==ui.webContents || event.senderFrame!==ui.webContents.mainFrame || event.senderFrame.url!==uiUrl)return {ok:false,error:{code:'IPC_DENIED',message:'请求来源不受信任。'}};
+    if(event.sender!==ui.webContents || event.senderFrame!==ui.webContents.mainFrame || !isSameFileUrl(event.senderFrame.url,uiUrl))return {ok:false,error:{code:'IPC_DENIED',message:'请求来源不受信任。'}};
     try{return {ok:true,data:await uiController.invoke(name,payload)};}catch(error){return {ok:false,error:{code:error.code || error.message,message:'测试请求未完成。'}};}
   });
   async function until(expression){for(let i=0;i<100;i++){if(await ui.webContents.executeJavaScript(expression))return;await new Promise(r=>setTimeout(r,100));}throw new Error('UI_CONDITION_TIMEOUT');}

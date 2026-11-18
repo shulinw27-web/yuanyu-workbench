@@ -5,6 +5,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createController,safeError} from '../src/controller.mjs';
 import {startInteractiveMockSite} from '../src/mock/interactive-fixture.mjs';
 import {createInteractiveBrowser} from '../src/browser/interactive.mjs';
+import {isSameFileUrl} from '../src/core/file-url.mjs';
 import {tmpdir} from 'node:os';
 import {resolve} from 'node:path';
 
@@ -23,7 +24,19 @@ export async function runDemonstrationSmoke({BrowserWindow,cryptoAdapter,systems
   const evaluate=async code=>{try{return await ui.webContents.executeJavaScript(code,true);}catch(error){throw new Error('DEMONSTRATION_UI_SCRIPT_FAILED at '+stage,{cause:error});}};
   const until=async(check,label)=>{const deadline=Date.now()+12000;while(Date.now()<deadline){const value=await check();if(value)return value;await new Promise(resolve=>setTimeout(resolve,60));}throw new Error('DEMONSTRATION_SMOKE_TIMEOUT: '+label);};
   const waitUi=(code,label)=>until(()=>evaluate(code),label);
+  const waitEnabled=(selector,label)=>until(()=>evaluate(`(()=>{const node=document.querySelector(${JSON.stringify(selector)});return !!node&&!node.disabled;})()`).catch(()=>false),label);
   const click=selector=>evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  // The workbench re-renders on every snapshot; an observation refresh can remove the action form
+  // between a readiness check and the click. Submit atomically in one renderer turn and retry.
+  const submitDemoAction=(body,label)=>until(async()=>{
+    try{
+      return await evaluate(`(()=>{const control=document.querySelector('.demonstration-element'),submit=document.querySelector('.demonstration-act');if(!control||!submit||submit.disabled)return false;${body};return true;})()`);
+    }catch(error){
+      const message=String(error?.cause?.message||error?.message||error);
+      if(message.includes('Cannot read properties of null'))return false;
+      throw error;
+    }
+  },label);
   const invoke=async(action,payload={})=>{const response=await evaluate(`window.workbench.invoke(${JSON.stringify(action)},${JSON.stringify(payload)})`);assert.equal(response.ok,true,JSON.stringify(response.error));return response.data;};
   const taskState=async(id,status)=>until(async()=>{const state=await controller.snapshot(),task=state.agentTasks.find(task=>task.id===id);if(task?.status==='failed')throw new Error('DEMONSTRATION_SMOKE_FAILED: '+JSON.stringify(task.error));return task?.status===status&&!state.busy?task:false;},status);
   const businessWindow=()=>{const matches=windows.filter(win=>!win.isDestroyed()&&win.webContents.getURL().startsWith(fixture.site.origin+'/'));assert.equal(matches.length,1);return matches[0];};
@@ -53,7 +66,7 @@ export async function runDemonstrationSmoke({BrowserWindow,cryptoAdapter,systems
         }};
       },onUpdate:state=>{updates.push(state);if(!ui.isDestroyed())ui.webContents.send('workbench:update',state);}});
     ipcMain.handle('workbench:invoke',async(event,action,payload)=>{
-      if(event.sender!==ui.webContents||event.senderFrame!==ui.webContents.mainFrame||event.senderFrame.url!==uiUrl)return {ok:false,error:{code:'IPC_DENIED'}};
+      if(event.sender!==ui.webContents||event.senderFrame!==ui.webContents.mainFrame||!isSameFileUrl(event.senderFrame.url,uiUrl))return {ok:false,error:{code:'IPC_DENIED'}};
       calls.push(action);try{return {ok:true,data:await controller.invoke(action,payload)};}catch(error){return {ok:false,error:safeError(error)};}
     });
     await ui.loadURL(uiUrl);
@@ -62,16 +75,16 @@ export async function runDemonstrationSmoke({BrowserWindow,cryptoAdapter,systems
     await waitUi("document.querySelector('#demonstration-dialog').open",'start dialog');
     await evaluate("document.querySelector('#demonstration-goal').value='按月份筛选合成记录并核对';document.querySelector('#demonstration-form').requestSubmit()");
     const original=await until(async()=>(await controller.snapshot()).agentTasks.find(task=>task.execution==='demonstration'),'start task');
-    await waitUi("!!document.querySelector('.demonstration-handoff')&&!document.querySelector('.demonstration-handoff').disabled",'handoff UI');
-    stage='handoff';await click('.demonstration-handoff');await waitUi("!!document.querySelector('.demonstration-resume')&&!document.querySelector('.demonstration-resume').disabled",'resume control');
+    await waitEnabled('.demonstration-handoff','handoff UI');
+    stage='handoff';await click('.demonstration-handoff');await waitEnabled('.demonstration-resume','resume control');
     await humanLogin();await click('.demonstration-resume');
-    await waitUi("!!document.querySelector('.demonstration-element')&&!document.querySelector('.demonstration-act').disabled",'safe controls');
-    stage='select month';await evaluate("(()=>{const control=document.querySelector('.demonstration-element');control.value=[...control.options].find(option=>option.text.startsWith('月份')).value;control.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('.demonstration-value').value='2026-09';document.querySelector('.demonstration-action-form').requestSubmit()})()");
+    await waitEnabled('.demonstration-element','safe controls');await waitEnabled('.demonstration-act','safe controls');
+    stage='select month';await submitDemoAction("control.value=[...control.options].find(option=>option.text.startsWith('月份')).value;control.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('.demonstration-value').value='2026-09';document.querySelector('.demonstration-action-form').requestSubmit()",'select month');
     await until(async()=>{const state=await controller.snapshot();return state.demonstration&&!state.demonstration.operationPending&&state.agentTasks.find(task=>task.id===original.id)?.trace.some(entry=>entry.tool==='select');},'record select');
-    await waitUi("!document.querySelector('.demonstration-act').disabled",'next control ready');
-    stage='filter records';await evaluate("(()=>{const control=document.querySelector('.demonstration-element');control.value=[...control.options].find(option=>option.text==='筛选合成记录').value;control.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('.demonstration-action-form').requestSubmit()})()");
+    await waitEnabled('.demonstration-act','next control ready');
+    stage='filter records';await submitDemoAction("control.value=[...control.options].find(option=>option.text==='筛选合成记录').value;control.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('.demonstration-action-form').requestSubmit()",'filter records');
     await until(async()=>{const state=await controller.snapshot();return state.demonstration?.canFinish&&state.demonstration.page.text.includes('SYN-091')&&state.demonstration.page.text.includes('9087')&&!state.demonstration.operationPending;},'fresh September result');
-    await waitUi("!document.querySelector('.demonstration-finish').disabled",'finish available');
+    await waitEnabled('.demonstration-finish','finish available');
     await evaluate("document.querySelector('.demonstration-observation').open=true;new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
     await mkdir(join(root,'output/screenshots'),{recursive:true});
     await writeFile(join(root,'output/screenshots/demonstration-recording.png'),(await ui.webContents.capturePage()).toPNG());
