@@ -11,6 +11,26 @@ function path(value, origin) {
   return value;
 }
 
+export function validateQueryKeys(value, paths) {
+  const queryKeys = {};
+  if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) throw fail('查询参数白名单无效。');
+  for (const [pathname, keys] of Object.entries(value ?? {})) {
+    if (!paths.includes(pathname) || !Array.isArray(keys) || keys.length > 20 || keys.some((key) => typeof key !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_-]{0,40}$/.test(key) || SENSITIVE_KEY.test(key))) throw fail('仅允许显式非敏感查询参数。');
+    queryKeys[pathname] = Object.freeze([...new Set(keys)]);
+  }
+  return Object.freeze(queryKeys);
+}
+
+export function validateReadOnlyActions(value) {
+  if (value !== undefined && !Array.isArray(value)) throw fail('只读动作配置无效。');
+  const actions = (value ?? []).map((action) => {
+    if (!action || !selector(action.selector) || !['read', 'search', 'filter'].includes(action.kind)) throw fail('只读动作配置无效。');
+    return Object.freeze({ selector: action.selector, kind: action.kind });
+  });
+  if (actions.length > 100) throw fail('只读动作配置过多。');
+  return Object.freeze(actions);
+}
+
 export function validateInteractiveSite(site) {
   if (!site || typeof site !== 'object' || !ID.test(site.id)) throw fail('受控站点标识无效。');
   let origin;
@@ -24,18 +44,8 @@ export function validateInteractiveSite(site) {
   const paths = [...new Set(site.paths.map((value) => path(value, origin.origin)))];
   const entryPath = path(site.entryPath ?? paths[0], origin.origin);
   if (!paths.includes(entryPath)) throw fail('入口不在允许页面路径中。');
-  const queryKeys = {};
-  if (site.queryKeys !== undefined && (!site.queryKeys || typeof site.queryKeys !== 'object' || Array.isArray(site.queryKeys))) throw fail('查询参数白名单无效。');
-  for (const [pathname, keys] of Object.entries(site.queryKeys ?? {})) {
-    if (!paths.includes(pathname) || !Array.isArray(keys) || keys.length > 20 || keys.some((key) => typeof key !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_-]{0,40}$/.test(key) || SENSITIVE_KEY.test(key))) throw fail('仅允许显式非敏感查询参数。');
-    queryKeys[pathname] = Object.freeze([...new Set(keys)]);
-  }
-  if (site.readOnlyActions !== undefined && !Array.isArray(site.readOnlyActions)) throw fail('只读动作配置无效。');
-  const readOnlyActions = (site.readOnlyActions ?? []).map((action) => {
-    if (!action || !selector(action.selector) || !['read', 'search', 'filter'].includes(action.kind)) throw fail('只读动作配置无效。');
-    return Object.freeze({ selector: action.selector, kind: action.kind });
-  });
-  if (readOnlyActions.length > 100) throw fail('只读动作配置过多。');
+  const queryKeys = validateQueryKeys(site.queryKeys, paths);
+  const readOnlyActions = validateReadOnlyActions(site.readOnlyActions);
   let credentialForm;
   if (site.credentialForm !== undefined) {
     const form = site.credentialForm;

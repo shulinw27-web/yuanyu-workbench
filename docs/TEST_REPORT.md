@@ -1,5 +1,13 @@
 # 测试与回归报告
 
+## 2026-11-18 W13 自定义站点安全 GET 按钮规则配置（本机部分）
+
+范围：补齐唯一清单 §9 W13“安全GET按钮规则配置/自定义站点按钮授权入口”缺口。`src/sites/registry.mjs` 在字段白名单与持久化中新增 `queryKeys`/`readOnlyActions`，与 `src/browser/interactive-policy.mjs` 共用导出的校验函数；`src/controller.mjs` 构造受控浏览器时把规则随自定义站点透传；`src/ui/index.html` 与 `src/ui/app.js` 增加规则填写、回填、解析与列表展示。旧站点缺少字段时默认为空，不放大任何权限：按钮未命中规则仍返回 `WRITE_CONFIRM_REQUIRED`，命中后仍须同源、已允许路径、非敏感查询参数、GET 表单/链接与人工登录边界。
+
+命令与结果（Node v24.14.1 / Windows）：`npm test` **242/242 通过、无跳过**（`test/sites.test.mjs` 由 3 项增至 6 项：规则持久化并进入 `validateInteractiveSite`、旧站点数据兼容默认空规则、越界路径/敏感参数/非法 kind/过量配置拒绝且 revision 更新保留规则）；`npm run test:desktop` **8/8 阶段通过**，UI 阶段从真实表单填写 `/login: state` 与两条按钮规则，断言 `snapshot.sites` 的 `queryKeys`/`readOnlyActions` 及列表“2 条只读按钮规则”；`npm run check` 通过，检查 114 个文件。全部合成配置，未连接外部网站、未调用真实模型。
+
+证据边界：本次只验证规则从 UI→本机存储→浏览器策略的链路；真实站点的控件选择器、SSO/CDN/iframe/API 兼容与精确业务步骤恢复仍需用户提供目标系统后验收，不因本机配置入口完成而勾选 W13 父项。
+
 ## 2026-11-18 M-D7 W15 归纳管线与 Windows 文件 URL 来源校验修复
 
 范围：按[架构设计 v1](../designs/yuanyu-workbench-harness-design-v1.md) §4.7 落地人工示范→数据配方归纳：新增 `src/agent/induct.mjs`（安全 trace 输入、单个 `propose_recipe` 闭集 tool call、按示范站点/控件/值做确定性校验、系统派生 open 步骤、`replayRecipe`+`verifyTaskResult` 确定性试运行、一次失败回喂、用户确认），`src/model/gateway.mjs` 新增只允许 `propose_recipe` 的 `createInductionRequester`，`src/controller.mjs` 新增 `agent.induct` / `agent.induct.confirm` / `agent.induct.discard`，`src/agent/store.mjs` 新增 `saveInducedSkill`，`src/ui/app.js` 新增候选确认视图。产物是可核对的数据步骤，不是代码；重放仍走四工具 schema、站点白名单、角色/名称唯一匹配与 consent 全链。

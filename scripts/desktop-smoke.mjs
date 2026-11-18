@@ -164,9 +164,13 @@ export async function runDesktopSmoke({BrowserWindow,cryptoAdapter,systems,dataD
     await until(`!document.querySelector('#confirm-dialog').open && [...document.querySelectorAll('#workflow-list h3')].some(h=>h.textContent==='界面回归月报') && !document.querySelector('#identity-select').disabled`);
     const restored=(await uiController.snapshot()).workflows.find(w=>w.id===edited.id);assert.equal(restored.version,5);assert.equal(restored.parameters.month,'2026-10');assert.equal(restored.verified,false);
     // Site configuration is persisted without making any external website request.
-    await runUi(`document.querySelector('[data-view="accounts"]').click();document.querySelector('#register-site').click();document.querySelector('#site-label').value='合成HTTPS配置（不连接）';document.querySelector('#site-url').value='https://fixture.example.invalid/';document.querySelector('#site-paths').value='/' + String.fromCharCode(10) + '/login';document.querySelector('#site-form').requestSubmit();`);
+    await runUi(`document.querySelector('[data-view="accounts"]').click();document.querySelector('#register-site').click();document.querySelector('#site-label').value='合成HTTPS配置（不连接）';document.querySelector('#site-url').value='https://fixture.example.invalid/';document.querySelector('#site-paths').value='/' + String.fromCharCode(10) + '/login';document.querySelector('#site-query-keys').value='/login: state';document.querySelector('#site-readonly-actions').value='#login-submit | search' + String.fromCharCode(10) + 'a.next | read';document.querySelector('#site-form').requestSubmit();`);
     await until(`!document.querySelector('#site-dialog').open && document.querySelector('#controlled-site-list').textContent.includes('合成HTTPS配置')`);
     assert.equal((await uiController.snapshot()).sites.length,1);
+    const configuredSite=(await uiController.snapshot()).sites[0];
+    assert.deepEqual(configuredSite.queryKeys,{'/login':['state']});
+    assert.deepEqual(configuredSite.readOnlyActions,[{selector:'#login-submit',kind:'search'},{selector:'a.next',kind:'read'}]);
+    assert.ok((await ui.webContents.executeJavaScript(`document.querySelector('#controlled-site-list').textContent`)).includes('2 条只读按钮规则'));
     await runUi(`document.querySelector('[data-view="settings"]').click();document.querySelector('#theme-select').value='dark';document.querySelector('#theme-select').dispatchEvent(new Event('change'));`);
     assert.equal(await ui.webContents.executeJavaScript(`document.documentElement.dataset.theme`),'dark');
     assert.equal(await ui.webContents.executeJavaScript(`document.querySelector('#model-mode-option').disabled`),true);

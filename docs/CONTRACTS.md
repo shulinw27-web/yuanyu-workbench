@@ -155,3 +155,10 @@ UI负责界面文件 src/ui/*；不直接访问Node和文件系统。凭据表�
 - controller 动作：`agent.induct{sourceTaskId,goal?,consent:{taskText:true}}` 只接受本人 `execution:'demonstration'` 且 `status:'completed'`、带安全 trace 的源任务；整个归纳过程占用 planning 互斥并经 `identity`/站点修订/取消复验，`snapshot.induction` 公开 `{sourceTaskId,candidate,usage}`，身份切换即清空。`agent.induct.confirm{name,pinned}` 调 `agentStore.saveInducedSkill`，重新校验来源任务已完成、recipe 白名单与站点绑定，走个人浏览器 Skill 同一存储路径；`agent.induct.discard{}` 仅丢弃当前候选，不写磁盘。
 - `src/core/file-url.mjs` 的 `isSameFileUrl(actual,expected)` 用于主进程 IPC 来源校验与 `will-navigate`：仅当两端为 `file://` 且解析到同一本机文件时为真；Windows 下盘符与路径大小写不敏感（Electron 返回的 `file:///D:/...` 与 `pathToFileURL` 推导的 `file:///d:/...` 视为同一来源），非 Windows 保留路径大小写敏感，远程 URL、异常 URL 与非字符串一律拒绝。desktop/demonstration/agent 三个冒烟脚本的帧来源校验采用同一函数，不放宽发帧窗口与 mainFrame 校验。
 
+## 自定义站点安全 GET 按钮规则（2026-11-18）
+
+- `site.register`/`site.update` 在原有 `id/label/origin/entryPath/paths/revision` 之外接受 `queryKeys` 与 `readOnlyActions`。`queryKeys` 为 `{path:[非敏感参数名]}`，路径必须在 `paths` 中，最多 20 个键；`readOnlyActions` 为 `[{selector,kind}]`，selector 为 1–256 字符的 CSS 选择器，kind 仅 `read`/`search`/`filter`，最多 100 条。校验函数 `validateQueryKeys`/`validateReadOnlyActions` 由 `src/browser/interactive-policy.mjs` 导出，站点存储与浏览器策略共用同一实现；旧站点缺少这两个字段时默认为 `{}`/`[]`，仍可读取，且默认不放行任何按钮。
+- 规则按站点 revision 乐观锁持久化于 `sites/<company>/<user>/sites.json`（mode 0o600）；`snapshot.sites` 返回完整站点规则，`agentSites` 仍只暴露 id/label/origin/revision/builtin。controller 构造受控浏览器时把自定义站点规则原样透传，并保留 `manual:true`：登录/MFA 仍由用户接管。
+- 执行边界不变：`src/browser/interactive.mjs` 中未命中 `readOnlyActions` 的按钮返回 `WRITE_CONFIRM_REQUIRED`；命中后还须 `form.method==='get'`、表单 action 或链接 href 在同源/路径/查询白名单内、target 为空或 `_self`、链接无 `download`，且 `search`/`filter` 必须挂在表单上。凭据控件、POST 业务提交、外域和敏感查询参数继续拒绝；UI 填写的选择器只是本机配置字符串，不执行页面脚本。
+- UI：`site-dialog` 的“允许的查询参数”（`路径: 参数1,参数2`）与“只读按钮规则”（`CSS选择器 | read/search/filter`）每行一条，编辑时回填，保存时解析进 payload；列表显示规则条数并可在编辑中撤销。真实控件选择器与页面适配仍需用户提供目标站点后验收。
+

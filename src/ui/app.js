@@ -668,7 +668,7 @@ function renderSites() {
     return;
   }
   for (const site of sites) {
-    const info = append(element('div', 'controlled-site-info'), element('strong', '', site.label || site.id), element('p', '', `${site.origin}${site.entryPath || '/'} · ${list(site.paths).length} 个允许路径`));
+    const info = append(element('div', 'controlled-site-info'), element('strong', '', site.label || site.id), element('p', '', `${site.origin}${site.entryPath || '/'} · ${list(site.paths).length} 个允许路径 · ${Object.keys(site.queryKeys || {}).length} 组查询参数 · ${list(site.readOnlyActions).length} 条只读按钮规则`));
     const actions = append(element('div', 'controlled-site-actions'),
       button('打开并登录', 'button secondary small', () => browserAction('browser.open', site.id), { disabled: isLocked() }),
       button('观察', 'text-button', () => browserAction('browser.observe', site.id), { disabled: isLocked() }),
@@ -980,9 +980,39 @@ function setTheme(theme) {
   $('#theme-cycle').title = `外观：${{ system: '跟随系统', light: '浅色', dark: '深色' }[selected]}`;
   try { localStorage.setItem('yuanyu-theme', selected); } catch { /* The appearance preference is optional. */ }
 }
+function parseSiteQueryKeys(text, paths) {
+  const result = {};
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const split = line.indexOf(':');
+    if (split < 1) throw new Error('查询参数行须写成“路径: 参数1,参数2”。');
+    const path = line.slice(0, split).trim();
+    const keys = line.slice(split + 1).split(',').map(key => key.trim()).filter(Boolean);
+    if (!paths.includes(path) || !keys.length) throw new Error('查询参数只可声明已允许路径下的非空参数名。');
+    result[path] = [...new Set([...(result[path] || []), ...keys])];
+  }
+  return result;
+}
+function parseSiteReadOnlyActions(text) {
+  const rules = new Map();
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const parts = line.split('|');
+    if (parts.length !== 2) throw new Error('只读按钮规则须写成“CSS选择器 | read/search/filter”。');
+    const selector = parts[0].trim(), kind = parts[1].trim().toLowerCase();
+    if (!selector || !['read', 'search', 'filter'].includes(kind)) throw new Error('只读按钮类型只支持 read、search、filter。');
+    rules.set(`${kind}\u0000${selector}`, { selector, kind });
+  }
+  return [...rules.values()];
+}
 function openSiteDialog(site) {
   if(isLocked())return;$('#site-form').reset();$('#site-form').dataset.siteId=site?.id||'';$('#site-form').dataset.revision=String(site?.revision||'');
-  $('#site-dialog-title').textContent=site?'编辑受控站点':'添加受控站点';$('#site-label').value=site?.label||'';$('#site-url').value=site?site.origin+site.entryPath:'';$('#site-paths').value=site?site.paths.join('\n'):'/\n/login';$('#site-error').hidden=true;$('#site-dialog').showModal();
+  $('#site-dialog-title').textContent=site?'编辑受控站点':'添加受控站点';$('#site-label').value=site?.label||'';$('#site-url').value=site?site.origin+site.entryPath:'';$('#site-paths').value=site?site.paths.join('\n'):'/\n/login';
+  $('#site-query-keys').value=site?Object.entries(site.queryKeys||{}).map(([path,keys])=>`${path}: ${keys.join(', ')}`).join('\n'):'';
+  $('#site-readonly-actions').value=site?list(site.readOnlyActions).map(rule=>`${rule.selector} | ${rule.kind}`).join('\n'):'';
+  $('#site-error').hidden=true;$('#site-dialog').showModal();
 }
 
 function newTask() {
@@ -1375,7 +1405,9 @@ $('#site-form').addEventListener('submit',async event=>{
     if(url.protocol!=='https:' || url.username || url.password || url.search || url.hash)throw new Error('请填写不含账号、查询参数或片段的 HTTPS 地址。');
     const paths=[...new Set([url.pathname,...$('#site-paths').value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean)])];
     if(paths.some(path=>!path.startsWith('/') || path.startsWith('//') || /[?#*\\]/.test(path)))throw new Error('允许路径须以 / 开头，且不含查询参数、片段、通配符或反斜线。');
-    const id=$('#site-form').dataset.siteId;const payload={id:id||`site-${Date.now().toString(36)}`,label:$('#site-label').value.trim(),origin:url.origin,entryPath:url.pathname,paths};if(id)payload.expectedRevision=Number($('#site-form').dataset.revision);
+    const queryKeys=parseSiteQueryKeys($('#site-query-keys').value,paths);
+    const readOnlyActions=parseSiteReadOnlyActions($('#site-readonly-actions').value);
+    const id=$('#site-form').dataset.siteId;const payload={id:id||`site-${Date.now().toString(36)}`,label:$('#site-label').value.trim(),origin:url.origin,entryPath:url.pathname,paths,queryKeys,readOnlyActions};if(id)payload.expectedRevision=Number($('#site-form').dataset.revision);
     await invoke(id?'site.update':'site.register',payload);
     await refresh();$('#site-dialog').close();toast('已注册个人受控站点，登录或 MFA 需要你接管完成。');
   }catch(error){$('#site-error').textContent=error.message;$('#site-error').hidden=false;}
