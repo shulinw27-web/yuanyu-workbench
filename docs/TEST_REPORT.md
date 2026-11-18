@@ -2,6 +2,14 @@
 
 日期：2026-11-16。状态：M7个人开源版范围调整已实施并验证——桌面版移除登录注册/推广额度/公司流程界面，自定义模型连接为唯一模型入口；工作区锁PID复用缺陷修复（曾导致启动白屏）。`npm test` 260/260通过（含4项锁映像复用回归），`npm run check` 123文件通过，`npm run test:desktop` 8/8阶段通过（desktop-smoke公司UI流程改为元素不存在断言+IPC层校验，product-ui-smoke重写为个人开源版断言，product-integration-smoke保留真实HTTP账号安全回归）。此前记录的M5/M6组件验证仍真实有效，仅桌面产品不再接入展示。真实模型/业务效果对照、生产与尚未开发部分按唯一清单保留。
 
+## 2026-11-18 完全独立个人向收敛验证（M11）
+
+范围：按产品决定整体取消账号服务、推广额度、公网部署与企业入口方向，收敛为完全独立本机 Agent。删除 `src/service/` 全部模块、账号客户端与推广规划、`src/ui/demo-account.mjs`、`deploy/` 部署样例、`docs/OPERATIONS.md` 及 `package.json` 的 `service`/`service:admin`/`readiness` 脚本；身份函数 `accountIdentity`/`isAccountIdentity` 迁至 `src/core/identity.mjs`（agent/core/memory/project 四处 import 改指本地模块）；controller 移除全部 productClient/sponsored/model.source/developer.contact 分支与账号动作，snapshot 不再暴露 product/企业公开示例。
+
+命令与结果（Node v24.14.1 / Windows）：`npm test` **227/227 通过**（较上轮 285 减少的 58 项为随账号服务移除的 8 个运营测试；保留的撤权测试改写为本机身份切换隔离：demonstration-security 切 bob 后示范不可见、切回 alice 旧示范已取消；memory-consent-revocation 切 bob 后记忆为空、切回 alice 原记忆完整恢复；demonstration-smoke 去掉账号脚手架、保留示范录制→重放恢复并断言零模型用量）；`npm run test:desktop` 8/8 阶段通过；`npm run check` 通过。`model:eval` 盲测入口与全部确定性/安全回归保留。
+
+证据边界：全部合成数据，未调用真实模型或企业系统；M5/W23 路线整体取消，不再列为待办。账号/额度相关测试删除后，"额度耗尽不重试""账号撤权隐藏"等历史验证仅为归档记录，不再属于现行产品断言；现行等价安全语义为身份切换隔离。M10 的 M-D5/M-D6/M-D7 与 W13/W14/W15/W17/W18 的真实环境项边界不变。后续文档链接检查不应再引用已删除的运维文档。
+
 ## 2026-11-17 Harness 升级 M-D1–M-D4 验证（架构设计落地前四步）
 
 范围：按 `designs/yuanyu-workbench-harness-design-v1.md` 迁移顺序实施前四步——M-D1 前缀稳定契约成文（registry 披露顺序契约注释 + `PROMPT_VERSION=2`）；M-D2 错误回喂三分类（`recovery-policy.mjs` 数据化 A/B/C 分类与 `TRANSIENT_READ_CODES`，executor 纯读工具瞬时错误推导 `not_started`，A 类以工具消息观察回喂且不消耗修正额度，打转指纹 `AGENT_LOOPS_DETECTED`）；M-D3 收紧式并行（executor 全局 busy 锁改站点粒度锁：open/observe 按站点并发、act/handoff 全局互斥；tool-loop 仅异站纯读批量并发、部分失败合并、降级串行）；M-D4 成本观测（网关 `usage` 解析透传 `{message,usage}`、循环累计并把 `usage/promptVersion/compactions` 落入任务终态白名单、budget schema v1→v2 原子迁移新增 `compactions` 键与 standard/induction 分档 caps 与 zeroable 清单）。
@@ -120,7 +128,7 @@
 - 模型验收准备：14道固定配方规划题，独立预期与评分；实际运行`npm run model:eval -- --offline`结果not_run、scorePercent:null、networkRequests:0。live入口需明确允许付费、仓库外模型配置与请求上限；每题一次，失败计入预算、止损错误停止。不执行浏览器、不证明实际模型质量。
 - 新安全回归：admin不能通过提前realpath丢失父目录junction/symlink信息，配置链接也在读取前拒绝；打包不带误放的实际部署配置。`package.json`/lock运行要求统一Node>=24，符合本项目实际验证环境。
 
-需要用户准备的资源、后续仍需工程实现的内容和真实验收分别列于PLAN第9节；运维操作见[OPERATIONS](OPERATIONS.md)。本轮没有将W13/W14/W15/W16/W17/W18/W23父项全部勾选完成。
+需要用户准备的资源、后续仍需工程实现的内容和真实验收分别列于PLAN第9节。本段为 2026-11-07 历史记录：当时的运维文档与部署样例已于 2026-11-18 整体移除（见本文档 M11 节）。W23 已取消，不再列为父项。
 
 ## 只读工作流引用恢复增量（2026-11-06）
 

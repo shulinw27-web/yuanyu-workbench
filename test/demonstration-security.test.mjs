@@ -17,21 +17,15 @@ function browserFixture(){
 }
 async function temporary(t){const root=await mkdtemp(join(tmpdir(),'yuanyu-demonstration-security-'));t.after(()=>rm(root,{recursive:true,force:true}));return root;}
 
-test('账号撤权后的示范页面保持隐藏，用户可显式重新登录而不被旧示范锁死',async t=>{
-  const dataDir=await temporary(t),f=browserFixture();let authenticated=true;
-  const account={id:'synthetic-account',displayName:'合成用户',tier:'personal',verified:true};
-  const client={
-    status:async()=>({authenticated,account:authenticated?account:undefined,mode:'personal',deployment:'local_demo',models:[],developer:{name:'开发者',contact:'wsltest'}}),
-    me:async()=>{if(!authenticated)throw Object.assign(new Error('AUTH_REQUIRED'),{code:'AUTH_REQUIRED'});return {account};},
-    login:async()=>{authenticated=true;return {account};}
-  };
-  const controller=await createController({dataDir,systems,builtinSites:[site],cryptoAdapter:{available:()=>false},productClient:client,interactiveFactory:()=>f.browser});
+test('切换本机身份后旧示范页面不可见，回到本人身份时旧示范已取消且不锁死',async t=>{
+  const dataDir=await temporary(t),f=browserFixture();
+  const controller=await createController({dataDir,systems,builtinSites:[site],cryptoAdapter:{available:()=>false},interactiveFactory:()=>f.browser});
   t.after(()=>controller.close());
   const started=await controller.invoke('demo.start',{goal:'学习合成查询',siteIds:[site.id],mode:'mock_browser'});
-  authenticated=false;
-  const locked=await controller.snapshot();assert.equal(locked.identity,null);assert.equal(locked.demonstration,null);assert.ok(!JSON.stringify(locked).includes('isolated-synthetic-result-091'));
-  await controller.invoke('auth.login',{email:'synthetic@example.invalid',password:'synthetic-password-123'});
-  const restored=await controller.snapshot();assert.equal(restored.product.authenticated,true);assert.equal(restored.demonstration,null);
+  await controller.invoke('identity.switch',{userId:'bob'});
+  const switched=await controller.snapshot();assert.equal(switched.demonstration,null);assert.ok(!JSON.stringify(switched).includes('isolated-synthetic-result-091'));
+  await controller.invoke('identity.switch',{userId:'alice'});
+  const restored=await controller.snapshot();assert.equal(restored.demonstration,null);
   assert.equal(restored.agentTasks.find(task=>task.id===started.taskId).status,'cancelled');
 });
 

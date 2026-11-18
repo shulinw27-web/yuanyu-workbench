@@ -1,6 +1,5 @@
 import {createMemoryUI} from './memory-ui.js';
 import {createProjectUI} from './project-ui.js';
-import {demoSystemCredentialFor} from './demo-account.mjs';
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const SYSTEMS = [
@@ -1094,8 +1093,6 @@ function openCredentialDialog(system) {
   if (isLocked()) return;
   $('#credential-form').reset();
   $('#credential-system').value = system.id;
-  const demoCredential = demoSystemCredentialFor(product()?.deployment, system.id);
-  if (demoCredential) { $('#credential-username').value = demoCredential.username; $('#credential-password').value = demoCredential.password; }
   $('#credential-dialog-title').textContent = credentialFor(system.id) ? '更新系统账号' : '连接系统账号';
   $('#credential-system-caption').textContent = `${system.label} · 仅用于本机合成站点演示`;
   $('#credential-error').hidden = true;

@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listRecipeCatalog, validateWorkflowTemplate } from './recipe-catalog.mjs';
-import {isAccountIdentity} from '../product/client.mjs';
+import {isAccountIdentity} from './identity.mjs';
 
 const SCHEMA_VERSION = 2;
 const SHARED_SCHEMA_VERSION = 1;

@@ -3,8 +3,6 @@ import {mkdir,readFile,writeFile,mkdtemp} from 'node:fs/promises';
 import {join,dirname} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createController,safeError} from '../src/controller.mjs';
-import {createPromotionService} from '../src/service/index.mjs';
-import {createProductClient} from '../src/product/client.mjs';
 import {startInteractiveMockSite} from '../src/mock/interactive-fixture.mjs';
 import {createInteractiveBrowser} from '../src/browser/interactive.mjs';
 import {tmpdir} from 'node:os';
@@ -14,9 +12,7 @@ const root=join(dirname(fileURLToPath(import.meta.url)),'..');
 export async function runDemonstrationSmoke({BrowserWindow,cryptoAdapter,systems,dataDir}){
   const {ipcMain}=await import('electron');
   const fixture=await startInteractiveMockSite();
-  const service=await createPromotionService({dataDir:join(dataDir,'demo-learning-service'),demo:true,monthlyTokens:100000,dailyRequests:20});
   const privateDir=join(dataDir,'demo-learning-client');
-  const productClient=createProductClient({dataDir:privateDir,cryptoAdapter,baseUrl:service.url,allowLocalDemo:true});
   const windows=[],updates=[],calls=[];
   let injectStale=false,injected=0,staleFailures=0;
   function ControlledWindow(options){const win=new BrowserWindow(options);windows.push(win);return win;}
@@ -43,7 +39,7 @@ export async function runDemonstrationSmoke({BrowserWindow,cryptoAdapter,systems
     await until(async()=>!contents.isLoadingMainFrame()&&new URL(contents.getURL()).pathname==='/records'&&await contents.executeJavaScript("!!document.querySelector('[data-authenticated]')"),'human records');
   }
   try{
-    controller=await createController({dataDir:privateDir,cryptoAdapter,systems,productClient,BrowserWindow:ControlledWindow,builtinSites:[fixture.site],browserShow:false,
+    controller=await createController({dataDir:privateDir,cryptoAdapter,systems,BrowserWindow:ControlledWindow,builtinSites:[fixture.site],browserShow:false,
       interactiveFactory:options=>{
         const browser=createInteractiveBrowser(options);
         return {...browser,act:async(siteId,action)=>{
@@ -61,9 +57,7 @@ export async function runDemonstrationSmoke({BrowserWindow,cryptoAdapter,systems
       calls.push(action);try{return {ok:true,data:await controller.invoke(action,payload)};}catch(error){return {ok:false,error:safeError(error)};}
     });
     await ui.loadURL(uiUrl);
-    stage='register';const account=await invoke('auth.register',{email:'guided-desktop@example.invalid',name:'合成示范用户',password:'synthetic-demonstration-account'});
-    await invoke('auth.verify',{code:account.demoVerificationCode});
-    await waitUi("!document.body.classList.contains('product-locked')&&!document.querySelector('#demonstration-open').disabled",'registered UI');
+    stage='ready';await waitUi("!document.querySelector('#demonstration-open').disabled",'personal UI');
     stage='open demonstration';await click('[data-view="workspace"]');await click('#demonstration-open');
     await waitUi("document.querySelector('#demonstration-dialog').open",'start dialog');
     await evaluate("document.querySelector('#demonstration-goal').value='按月份筛选合成记录并核对';document.querySelector('#demonstration-form').requestSubmit()");
@@ -102,12 +96,12 @@ export async function runDemonstrationSmoke({BrowserWindow,cryptoAdapter,systems
     assert.equal(recovered.replay.state,'completed');
     assert.ok(recovered.steps.some(step=>step.id.startsWith('recovery-')&&step.status==='completed'),'恢复尝试应记录为完成步骤');
     assert.ok(updates.some(update=>update.agentTasks.some(task=>task.id===replay.taskId&&task.replay?.state==='recovering'&&task.replay.retries===1)));
-    assert.equal(state.product.usage.dailyRequestsUsed,0);assert.equal(state.product.usage.usedTokens,0);
+    assert.ok(state.agentTasks.every(task=>!task.usage),'示范录制与重放为确定性流程，不得产生模型请求用量');
     for(const secret of ['interactive123','246810','hidden-fixture-token','visible-token-secret','visible-query-secret'])assert.ok(!JSON.stringify(updates).includes(secret));
     for(const value of ['SYN-091','SYN-101'])assert.ok(!disk.includes(value));
     assert.ok(calls.includes('demo.start')&&calls.includes('demo.act')&&calls.includes('demo.finish')&&calls.includes('agent.skill.save'));
-    console.log('PASS 受控示范与恢复：真实UI录9月→保存Skill→改10月→真实DOM变更导致旧ref拒绝→仅当前步骤重新观察重试1次→实际网页结果；未调用模型、未扣额度、未落盘网页/引用。');
-  }finally{ipcMain.removeHandler('workbench:invoke');await controller?.close();ui.destroy();for(const win of windows)if(!win.isDestroyed())win.destroy();await fixture.close();await service.close();}
+    console.log('PASS 受控示范与恢复：真实UI录9月→保存Skill→改10月→真实DOM变更导致旧ref拒绝→仅当前步骤重新观察重试1次→实际网页结果；未调用模型、未落盘网页/引用。');
+  }finally{ipcMain.removeHandler('workbench:invoke');await controller?.close();ui.destroy();for(const win of windows)if(!win.isDestroyed())win.destroy();await fixture.close();}
 }
 
 if(process.versions.electron&&resolve(process.argv[1]||'')===fileURLToPath(import.meta.url)){

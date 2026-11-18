@@ -3,7 +3,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
-import {isAccountIdentity} from '../product/client.mjs';
+import {isAccountIdentity} from '../core/identity.mjs';
 import {MEMORY_KINDS,memoryFields,memoryId,memoryText,memoryBindings,memorySource,memoryExpiry,effectiveMemoryStatus,withinMemoryScope,memoryError,memoryAssert as assert} from './policy.mjs';
 import {retrieveMemories} from './retriever.mjs';
 

@@ -34,8 +34,6 @@ app.whenReady().then(async()=>{
     await runDemonstrationSmoke({BrowserWindow,cryptoAdapter,systems:mocks.systems,dataDir});
     const {runProductUISmoke}=await import('../scripts/product-ui-smoke.mjs');
     await runProductUISmoke({BrowserWindow});
-    const {runProductIntegrationSmoke}=await import('../scripts/product-integration-smoke.mjs');
-    await runProductIntegrationSmoke({BrowserWindow,cryptoAdapter,systems:mocks.systems,dataDir});
     await mocks.close();app.exit(0);
   } else {
     interactiveMock=await startInteractiveMockSite({port:15333});

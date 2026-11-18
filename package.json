@@ -11,9 +11,6 @@
     "test:desktop": "node scripts/launch.mjs --smoke",
     "check": "node scripts/check.mjs",
     "pack": "node scripts/pack.mjs",
-    "service": "node scripts/service.mjs",
-    "service:admin": "node scripts/service-admin.mjs",
-    "readiness": "node scripts/readiness.mjs",
     "model:eval": "node scripts/model-eval.mjs"
   },
   "engines": {

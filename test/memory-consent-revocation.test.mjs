@@ -20,59 +20,32 @@ const crypto=()=>{
 };
 const browser=()=>({open:async()=>({mode:'automatic'}),observe:async()=>({text:pageText,elements:[]}),handoff:async()=>({}),cancel:async()=>{},close:async()=>{}});
 
-async function accountFixture(t){
+async function localFixture(t){
   const dataDir=await mkdtemp(join(tmpdir(),'yuanyu-memory-revoke-')),cryptoAdapter=crypto();
-  let account={id:'memory-user-a',displayName:'合成用户A',tier:'personal',verified:true,email:'a@example.invalid'},authenticated=true;
-  const client={
-    status:async()=>({authenticated,account:authenticated?account:undefined,mode:'personal',deployment:'local_demo',models:[],developer:{name:'开发者',contact:'wsltest'}}),
-    me:async()=>{if(!authenticated)throw Object.assign(new Error('AUTH_REQUIRED'),{code:'AUTH_REQUIRED'});return {account};},
-    login:async()=>{authenticated=true;return {account};},
-    logout:async()=>{authenticated=false;return {loggedOut:true};},
-    verify:async()=>({verified:true})
-  };
-  const controller=await createController({dataDir,cryptoAdapter,systems,productClient:client,BrowserWindow:class{},interactiveFactory:()=>browser()});
+  const controller=await createController({dataDir,cryptoAdapter,systems,BrowserWindow:class{},interactiveFactory:()=>browser()});
   t.after(async()=>{await controller.close();await rm(dataDir,{recursive:true,force:true});});
-  return {controller,dataDir,
-    revoke:()=>{authenticated=false;},restore:()=>{authenticated=true;},
-    switchAccount:next=>{account={...next};},
-    login:()=>controller.invoke('auth.login',{email:account.email,password})};
+  return {controller,dataDir};
 }
 
-test('账号撤权后记忆整体隐藏、全部记忆IPC被拒；重新登录恢复本人记忆且跨账号隔离',async t=>{
-  const f=await accountFixture(t);
+test('切换本机身份后记忆按身份隔离：他人看不到本人记忆，切回本人完整恢复',async t=>{
+  const f=await localFixture(t);
   const saved=await f.controller.invoke('memory.save',preference);
   assert.equal(saved.status,'active');
   const before=await f.controller.snapshot();
   assert.equal(before.memory.available,true);assert.equal(before.memory.entries.length,1);
-  f.revoke();
-  const locked=await f.controller.snapshot();
-  assert.equal(locked.identity,null);
-  assert.deepEqual(locked.memory,{revision:0,available:false,entries:[],settings:{rememberEpisodes:false,rememberLessons:false}});
-  for(const [action,payload] of [
-    ['memory.preview',{query:'采购',siteIds:[]}],
-    ['memory.diff',{id:saved.id}],
-    ['memory.save',{kind:'preference',title:'撤权后写入',content:'不该成功',siteIds:[]}],
-    ['memory.enabled',{id:saved.id,enabled:false}],
-    ['memory.confirm',{id:saved.id}],
-    ['memory.settings',{rememberEpisodes:true}],
-    ['memory.forget',{id:saved.id}]
-  ])await assert.rejects(f.controller.invoke(action,payload),/AUTH_REQUIRED/);
-  f.restore();await f.login();
-  const restored=await f.controller.snapshot();
-  assert.equal(restored.memory.entries.length,1);
-  assert.equal(restored.memory.entries[0].id,saved.id);
-  assert.equal(restored.memory.entries[0].content,preference.content);
-  assert.ok(!restored.memory.entries.some(entry=>entry.title==='撤权后写入'));
 
-  f.switchAccount({id:'memory-user-b',displayName:'合成用户B',tier:'personal',verified:true,email:'b@example.invalid'});
-  await f.controller.invoke('auth.logout');await f.login();
-  assert.deepEqual((await f.controller.snapshot()).memory.entries,[]);
+  await f.controller.invoke('identity.switch',{userId:'bob'});
+  const other=await f.controller.snapshot();
+  assert.deepEqual(other.memory.entries,[]);
   await f.controller.invoke('memory.save',{kind:'preference',title:'B的偏好',content:'B使用UTF8',siteIds:[]});
   assert.equal((await f.controller.snapshot()).memory.entries.length,1);
-  f.switchAccount({id:'memory-user-a',displayName:'合成用户A',tier:'personal',verified:true,email:'a@example.invalid'});
-  await f.controller.invoke('auth.logout');await f.login();
+
+  await f.controller.invoke('identity.switch',{userId:'alice'});
   const back=await f.controller.snapshot();
-  assert.equal(back.memory.entries.length,1);assert.equal(back.memory.entries[0].id,saved.id);
+  assert.equal(back.memory.entries.length,1);
+  assert.equal(back.memory.entries[0].id,saved.id);
+  assert.equal(back.memory.entries[0].content,preference.content);
+  assert.ok(!back.memory.entries.some(entry=>entry.title==='B的偏好'));
 });
 
 async function agentFixture(t,{onRequest}={}){

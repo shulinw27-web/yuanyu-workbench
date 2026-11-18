@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID,createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import {isAccountIdentity} from '../product/client.mjs';
+import {isAccountIdentity} from '../core/identity.mjs';
 import {validateTaskBudget,claimTaskBudget,beginBudgetLease,finishBudgetLease} from './budget.mjs';
 
 const REPOSITORY = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');

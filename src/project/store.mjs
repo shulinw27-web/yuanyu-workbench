@@ -3,7 +3,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
-import {isAccountIdentity} from '../product/client.mjs';
+import {isAccountIdentity} from '../core/identity.mjs';
 
 const REPOSITORY=path.resolve(fileURLToPath(new URL('../..',import.meta.url)));
 const MAX_BYTES=2_000_000,LOCKS=new Set();let queue=Promise.resolve();

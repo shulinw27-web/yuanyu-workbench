@@ -11,8 +11,6 @@ import {createProjectStore} from './project/store.mjs';
 import {createDemonstration} from './agent/demonstration.mjs';
 import {createBrowserModelRequester,probeModelProfile} from './model/gateway.mjs';
 import {createModelProfiles,PROVIDERS} from './model/profiles.mjs';
-import {accountIdentity} from './product/client.mjs';
-import {sponsoredPlan} from './product/planner.mjs';
 import {createDemoWrite} from './runtime/demo-write.mjs';
 import { mkdir, realpath, lstat, unlink,readFile,writeFile,rename } from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
@@ -53,31 +51,27 @@ export function safeError(error) {
   return {code,message:messages[code] || '操作未完成，请核对当前身份、系统账号及执行状态后重试。'};
 }
 
-export async function createController({dataDir,cryptoAdapter,systems,BrowserWindow,builtinSites=[],onUpdate=()=>{},browserShow=true,openPath=async()=>{},planningGateway=proposeModelPlan,agentRequesterFactory,interactiveFactory,productClient,modelProbe=probeModelProfile,copyText=async()=>{throw new Error('CLIPBOARD_UNAVAILABLE');}}) {
+export async function createController({dataDir,cryptoAdapter,systems,BrowserWindow,builtinSites=[],onUpdate=()=>{},browserShow=true,openPath=async()=>{},planningGateway=proposeModelPlan,agentRequesterFactory,interactiveFactory,modelProbe=probeModelProfile}) {
   let identity=identities.alice, workspace, active=null, starting=false, startPending=null, switching=false, pending=null,planning=null;
-  let siteRegistry,customSites=[],currentSystems=systems,interactive=null,agentStore,agentRuntime,demonstration,configurationPending=null,profiles,demoWrite,memoryStore,projectStore,modelPreference={source:productClient?'sponsored':'byok',modelId:null};
+  let siteRegistry,customSites=[],currentSystems=systems,interactive=null,agentStore,agentRuntime,demonstration,configurationPending=null,profiles,demoWrite,memoryStore,projectStore;
   const trustedSites=builtinSites.map(site=>({...site,builtin:true,revision:1}));
   const agentSites=async()=>[...trustedSites,...await siteRegistry.list()];
   const modelFile=()=>join(dataDir,'models',identity.companyId,identity.userId,'model.local.json');
   const systemDictionary=sites=>({...systems,...Object.fromEntries(sites.map(site=>[site.id,{id:site.id,label:site.label,origin:site.origin,url:site.origin+site.entryPath}]))});
-  const preferencesFile=()=>join(dataDir,'product-preferences',identity.companyId,identity.userId,'state.json');
   const initialize = async () => {
     siteRegistry=createSiteRegistry({dataDir,identity});customSites=await siteRegistry.list();currentSystems=systemDictionary(customSites);workspace = await createWorkspace({dataDir,cryptoAdapter,identity,systems:currentSystems});profiles=createModelProfiles({dataDir,identity,cryptoAdapter});
-    modelPreference={source:productClient?'sponsored':'byok',modelId:null};
-    try{const value=JSON.parse(await readFile(preferencesFile(),'utf8'));if(!['sponsored','byok'].includes(value.source)||value.modelId!==null&&typeof value.modelId!=='string')throw new Error('MODEL_CONFIG_INVALID');modelPreference=value;}catch(error){if(error.code!=='ENOENT')throw error;}
     memoryStore=createMemoryStore({dataDir,identity,cryptoAdapter});initializeAgent();
     projectStore=createProjectStore({dataDir,identity});
     const owner=identity;demoWrite=createDemoWrite({dataDir,identity:owner,checkContext:async()=>identity===owner&&!switching&&await authorized(owner)});
   };
-  async function authorized(owner=identity){
-    if(!productClient)return true;
-    const value=await productClient.me();return identity===owner&&owner.userId===`user-${value.account.id}`&&!switching;
+  // 个人独立版无账号服务：授权恒真，身份隔离由各存储的 identity 断言与切换机制负责。
+  async function authorized(){
+    return true;
   }
   async function browserRequester(input){
     const owner=identity;
     if(!await authorized(owner))throw new Error('AUTH_REQUIRED');
     if(agentRequesterFactory)return agentRequesterFactory(input);
-    if(productClient&&modelPreference.source==='sponsored')return productClient.requester({modelId:modelPreference.modelId||((await productClient.status()).models[0]?.id),consent:input.consent});
     const selection=await profileSelection(profiles);return createBrowserModelRequester({...input,...selection});
   }
   async function profileSelection(store){const list=await store.list();if(list.activeId)return {profiles:store};if(list.revision>1)throw new Error('MODEL_NOT_CONFIGURED');return {};}
@@ -114,9 +108,9 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
         if(!ids.length)return {text:'',revision:0};
         const selected=await memories.retrieve({query:goal,siteBindings,ids,includeEpisodes:true});
         if(selected.entries.length!==ids.length)throw new Error('MEMORY_SELECTION_CHANGED');
-        const selection=JSON.stringify([modelPreference,(await profiles.list()).revision]);
+        const selection=(await profiles.list()).revision;
         return {text:JSON.stringify(selected.entries.map(({id,kind,title,content})=>({id,kind,title,content}))),revision:selected.revision,
-          check:async()=>identity===owner&&!switching&&memories===memoryStore&&await memories.getRevision()===selected.revision&&selection===JSON.stringify([modelPreference,(await profiles.list()).revision])};
+          check:async()=>identity===owner&&!switching&&memories===memoryStore&&await memories.getRevision()===selected.revision&&selection===(await profiles.list()).revision};
       },
       onTaskMemory:async info=>{
         if(identity!==owner||switching||memories!==memoryStore||!await authorized(owner))return;
@@ -125,26 +119,21 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     });
     demonstration=createDemonstration({store:agentStore,getSites:agentSites,getBrowser:()=>getBrowser(owner),isCurrent:()=>identity===owner&&!switching,authorize:()=>authorized(owner),onUpdate:notify,safeError});
   }
-  if(productClient){const initial=await productClient.status();if(initial.authenticated)identity=accountIdentity(initial.account);}
   await initialize();
   async function snapshot(){
     const owner=identity,target=workspace,registry=siteRegistry,store=agentStore,runtime=agentRuntime,demo=demonstration,sites=customSites,visibleSystems=Object.values(currentSystems),file=modelFile(),profileStore=profiles,writeSource=demoWrite,memories=memoryStore;
-    const [core,registered,tasks,skills,legacyModel,profileList,profileStatus,product]=await Promise.all([target.snapshot(),registry.list(),store.listTasks(),store.listSkills(),modelStatus(file),profileStore.list(),profileStore.status(),productClient?.status()]);
+    const [core,registered,tasks,skills,legacyModel,profileList,profileStatus]=await Promise.all([target.snapshot(),registry.list(),store.listTasks(),store.listSkills(),modelStatus(file),profileStore.list(),profileStore.status()]);
     if(owner!==identity||target!==workspace||store!==agentStore||runtime!==agentRuntime)return snapshot();
-    let model=profileList.activeId||profileList.revision>1?profileStatus:legacyModel;
-    if(productClient&&modelPreference.source==='sponsored'){const selected=product.models.find(m=>m.id===(modelPreference.modelId||product.models[0]?.id));model=selected&&product.account?.verified?{status:'ready',connection:'not_verified',mode:'sponsored',dataScope:'selected_pages',model:selected.label,host:'推广额度服务'}:{status:'not_configured',mode:'sponsored',dataScope:'selected_pages'};}
-    const productView=product?{...product,authenticated:!switching&&product.authenticated&&identity.userId===`user-${product.account.id}`,modelSource:modelPreference.source,sponsoredModelId:modelPreference.modelId||product.models[0]?.id}:null;
-    const base={...core,systems:visibleSystems,sites,agentSites:[...trustedSites,...registered].map(({id,label,origin,revision,builtin})=>({id,label,origin,revision,builtin:!!builtin})),agentTasks:tasks,agentSkills:skills,model,modelProfiles:{...profileList,providers:Object.entries(PROVIDERS).map(([id,p])=>({id,label:p.label,baseUrl:p.defaultBaseUrl,docUrl:p.docUrl}))},...(productView?{product:productView}:{}),mode:'preset_mock',busy:!!active||starting||!!planning||runtime.busy||!!configurationPending};
-    if(productView){base.shared=[{id:'sample-purchase-monthly',name:'采购与入库月报资料',version:1,description:'企业流程公开示例：跨采购、仓储核对并交付资料。个人版仅查看。',publisher:{displayName:'企业版公开示例'},publicSample:true}];if(!productView.authenticated){base.identity=null;base.systems=Object.values(systems);base.model={status:'not_configured'};for(const key of ['credentials','workflows','runs','agentTasks','agentSkills','sites','agentSites'])base[key]=[];base.modelProfiles={providers:base.modelProfiles.providers,profiles:[],activeId:null};}}
-    if(!productView||productView.authenticated){try{base.writeDemo=await writeSource.snapshot();}catch{base.writeDemo={records:[],approvals:[],unavailable:true};}}
+    const model=profileList.activeId||profileList.revision>1?profileStatus:legacyModel;
+    const base={...core,systems:visibleSystems,sites,agentSites:[...trustedSites,...registered].map(({id,label,origin,revision,builtin})=>({id,label,origin,revision,builtin:!!builtin})),agentTasks:tasks,agentSkills:skills,model,modelProfiles:{...profileList,providers:Object.entries(PROVIDERS).map(([id,p])=>({id,label:p.label,baseUrl:p.defaultBaseUrl,docUrl:p.docUrl}))},mode:'preset_mock',busy:!!active||starting||!!planning||runtime.busy||!!configurationPending};
+    try{base.writeDemo=await writeSource.snapshot();}catch{base.writeDemo={records:[],approvals:[],unavailable:true};}
     if(owner!==identity||writeSource!==demoWrite)return snapshot();
-    base.demonstration=!productView||productView.authenticated?demo.snapshot():null;
-    base.memory=!productView||productView.authenticated?await memories.snapshot():{revision:0,available:false,entries:[],settings:{rememberEpisodes:false,rememberLessons:false}};
+    base.demonstration=demo.snapshot();
+    base.memory=await memories.snapshot();
     const projects=projectStore;
-    base.projects=!productView||productView.authenticated?await projects.snapshot():{revision:0,projects:[],currentId:null};
+    base.projects=await projects.snapshot();
     base.busy=base.busy||demo.active||demo.busy;
     if(demo!==demonstration||memories!==memoryStore||projects!==projectStore)return snapshot();
-    if(productView?.authenticated&&!await authorized(owner).catch(()=>false))return snapshot();
     return base;
   }
   async function notify(){ onUpdate(await snapshot()); }
@@ -176,26 +165,6 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     const pendingChange={settled:new Promise(resolve=>{settled=resolve;})};configurationPending=pendingChange;
     try{const result=await operation(siteRegistry,workspace);if(owner!==identity||switching)throw new Error('CANCELLED');await closeBrowser();await initialize();pending=null;return result;}
     finally{if(configurationPending===pendingChange)configurationPending=null;settled();await notify();}
-  }
-  async function savePreference(value){
-    const file=preferencesFile();await mkdir(join(dataDir,'product-preferences',identity.companyId,identity.userId),{recursive:true});
-    const tmp=file+'.'+randomUUID()+'.tmp';await writeFile(tmp,JSON.stringify(value),{flag:'wx',mode:0o600});await rename(tmp,file);modelPreference=value;
-  }
-  async function accountAction(action,payload){
-    if(!productClient)throw new Error('ACTION_INVALID');
-    if(action==='auth.verify'){const result=await productClient.verify({code:payload.code});await notify();return result;}
-    // Explicit authentication may end an old guided demonstration, including one whose account was revoked.
-    if(action!=='auth.logout'){
-      if(active||starting||switching||planning||agentRuntime.busy||configurationPending)throw new Error('BUSY');
-    }else await configurationPending?.settled;
-    switching=true;
-    try{
-      await cancel();await closeBrowser();pending=null;
-      let result;
-      if(action==='auth.logout'){try{result=await productClient.logout();}catch{result={loggedOut:true,localOnly:true};}identity=identities.alice;}
-      else {result=await productClient[action==='auth.register'?'register':'login'](payload);identity=accountIdentity(result.account);}
-      await initialize();return result;
-    }finally{switching=false;await notify();}
   }
   async function execute(payload) {
     requireIdle();
@@ -269,13 +238,6 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
   async function invoke(action,payload={}) {
     if(!payload || typeof payload!=='object' || Array.isArray(payload))throw new Error('INPUT_INVALID');
     if(switching && action!=='snapshot')throw new Error('BUSY');
-    if(productClient&&!['snapshot','auth.register','auth.login','auth.verify','auth.logout','developer.contact.copy'].includes(action)){
-      const owner=identity;if(!await authorized(owner))throw new Error('AUTH_REQUIRED');
-      if(owner!==identity||switching)throw new Error('CANCELLED');
-      if(action==='identity.switch')throw new Error('MOCK_IDENTITY_DISABLED');
-      if(['workflow.import','workflow.publish','workflow.revoke'].includes(action))throw new Error('ENTERPRISE_REQUIRED');
-      if(['workflow.run','task.run','task.plan'].includes(action)&&payload.workflowId){const selected=(await workspace.snapshot()).workflows.find(w=>w.id===payload.workflowId);if(selected?.source?.kind==='company-template')throw new Error('ENTERPRISE_REQUIRED');}
-    }
     let result;
     switch(action) {
       case 'snapshot':return snapshot();
@@ -324,25 +286,16 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
         const method=action.slice(5);return demonstration[method](payload);
       }
       case 'demo.cancel':return demonstration.cancel({id:payload.id});
-      case 'developer.contact.copy':{const info=await productClient?.status();const text=info?.developer?.contact;if(!text||typeof text!=='string'||text.length>320)throw new Error('CONTACT_UNAVAILABLE');await copyText(text);return {copied:true};}
       case 'write.demo.preview':return changeSites(()=>demoWrite.preview(payload));
       case 'write.demo.confirm':return changeSites(()=>demoWrite.confirm({id:payload.id,fingerprint:payload.fingerprint}));
       case 'write.demo.inspect':return changeSites(()=>demoWrite.inspect(payload.id));
-      case 'auth.register':case 'auth.login':case 'auth.verify':case 'auth.logout':return accountAction(action,payload);
-      case 'model.profile.save':return changeSites(async()=>{const result=await profiles.save(payload);if(productClient)await savePreference({...modelPreference,source:'byok'});return result;});
-      case 'model.profile.select':return changeSites(async()=>{const result=await profiles.select(payload.id);if(productClient)await savePreference({...modelPreference,source:'byok'});return result;});
+      case 'model.profile.save':return changeSites(()=>profiles.save(payload));
+      case 'model.profile.select':return changeSites(()=>profiles.select(payload.id));
       case 'model.profile.delete':return changeSites(()=>profiles.remove(payload.id));
-      case 'model.source':return changeSites(async()=>{
-        if(!['sponsored','byok'].includes(payload.source)||!productClient&&payload.source==='sponsored')throw new Error('MODEL_CONFIG_INVALID');
-        if(payload.source==='sponsored'){const info=await productClient.status();if(!info.models.some(model=>model.id===payload.modelId))throw new Error('MODEL_NOT_AVAILABLE');}
-        await savePreference({source:payload.source,modelId:payload.modelId??null});return {source:payload.source};
-      });
       case 'model.test':{
         requireIdle();if(payload.consent!==true)throw new Error('MODEL_CONSENT_REQUIRED');const owner=identity,request=new AbortController();planning=request;
         try{
-          let result;
-          if(productClient&&modelPreference.source==='sponsored'){const requester=await productClient.requester({modelId:modelPreference.modelId||((await productClient.status()).models[0]?.id),consent:{taskText:true,pageContent:false}});await requester({signal:request.signal,messages:[{role:'system',content:'Connection probe. Reply OK only.'},{role:'user',content:'OK'}],tools:[]});result={connected:true,source:'sponsored'};}
-          else result=await modelProbe({profiles,consent:true,signal:request.signal});
+          const result=await modelProbe({profiles,consent:true,signal:request.signal});
           if(owner!==identity||request.signal.aborted)throw new Error('CANCELLED');return result;
         }finally{if(planning===request)planning=null;await notify();}
       }
@@ -362,7 +315,7 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
         requireIdle();if(payload.workflowId)throw new Error('MODEL_INPUT_INVALID');if(payload.consent!==true)throw new Error('MODEL_CONSENT_REQUIRED');
         const owner=identity,file=modelFile(),selectedProfiles=profiles,request=new AbortController();planning=request;pending=null;
         try {await notify();if(owner!==identity||request.signal.aborted)throw new Error('CANCELLED');
-          const plan=productClient&&modelPreference.source==='sponsored'?await sponsoredPlan({client:productClient,modelId:modelPreference.modelId||((await productClient.status()).models[0]?.id),text:payload.text,month:payload.month,consent:payload.consent,signal:request.signal}):await planningGateway({file,...await profileSelection(selectedProfiles),text:payload.text,month:payload.month,consent:payload.consent,signal:request.signal});
+          const plan=await planningGateway({file,...await profileSelection(selectedProfiles),text:payload.text,month:payload.month,consent:payload.consent,signal:request.signal});
           if(identity!==owner || planning!==request || request.signal.aborted)throw new Error('CANCELLED');
           pending=plan.supported?{...plan,workflowId:null,createdAt:Date.now()}:null;return plan;
         }finally{if(planning===request)planning=null;await notify();}
