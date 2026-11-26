@@ -28,11 +28,19 @@ export async function runDesktopSmoke({BrowserWindow,cryptoAdapter,systems,dataD
     // Recreate the workspace/controller to prove persisted credentials are usable, not an in-memory cache.
     await controller.close();
     controller=await createController({dataDir,cryptoAdapter,systems,BrowserWindow,browserShow:false,onUpdate:s=>updates.push(s)});
+    // 设当前项目，验证真实任务的产物按项目归档在 dataDir 内（不写入项目文件夹）。
+    const archiveRoot=await mkdtemp(join(tmpdir(),'yuanyu-smoke-archive-'));
+    const archiveProject=await action(controller,'project.importFolder',{root:archiveRoot});
+    assert.equal((await controller.snapshot()).projects.currentId,archiveProject.id);
     await action(controller,'task.plan',{text:'整理2026年10月采购月报',month:'2026-10'});
     const first=await action(controller,'task.run',{month:'2026-10'});await controller.waitForIdle();
     console.log('SMOKE: first browser run returned');
     let state=await controller.snapshot();let run=state.runs.find(r=>r.id===first.runId);
     assert.equal(run.status,'completed',JSON.stringify(run.error));
+    assert.equal(run.projectId,archiveProject.id,'完成的run必须固化当前项目归属');
+    const canonicalArchive=await realpath(join(dataDir,'outputs','mock-acme','alice',archiveProject.id));
+    assert.ok(dirname(run.artifact.path).startsWith(canonicalArchive),'产物须落在当前项目归档子目录');
+    assert.ok(!dirname(run.artifact.path).startsWith(await realpath(archiveRoot)),'产物不得写入项目文件夹本身');
     assert.equal(run.summary.orderCount,3);assert.equal(run.summary.orderedCents,530000);
     assert.equal(run.summary.receivedCents,250000);assert.equal(run.summary.unmatchedCount,1);assert.equal(run.summary.partialCount,1);
     const csv=await readFile(run.artifact.path,'utf8');assert.ok(csv.includes('PO-202610-003'));
@@ -123,8 +131,8 @@ export async function runDesktopSmoke({BrowserWindow,cryptoAdapter,systems,dataD
     assert.ok((await uiController.snapshot()).projects.projects.some(p=>p.name==='界面回归项目'&&p.origin==='empty'));
     await runUi(`const card=[...document.querySelectorAll('#project-list article')].find(c=>c.textContent.includes('界面回归项目'));[...card.querySelectorAll('button')].find(b=>b.textContent==='删除记录').click();`);
     await runUi(`document.querySelector('#confirm-action').click();`);
-    await until(`document.querySelectorAll('#project-list article').length===0`);
-    assert.equal((await uiController.snapshot()).projects.projects.length,0);
+    await until(`![...document.querySelectorAll('#project-list article')].some(c=>c.textContent.includes('界面回归项目'))`);
+    assert.ok(!(await uiController.snapshot()).projects.projects.some(p=>p.name==='界面回归项目'));
     await readdir(projectRoot);
     await rm(projectRoot,{recursive:true,force:true});
     // 多模态附件：界面添加图片与文本附件（视频被拒绝），chips 可移除。

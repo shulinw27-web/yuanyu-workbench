@@ -139,6 +139,7 @@ UI负责界面文件 src/ui/*；不直接访问Node和文件系统。凭据表�
 - `snapshot.projects`返回`{revision,projects,currentId}`；身份切换时整体隐藏（与`memory`同款门控）。项目是按身份隔离的**目录登记记录**，存于仓库外`projects/<company>/<user>/state.json`，单写者队列、原子替换、PID映像锁与`projects`根锁。
 - `project.createEmpty{name,root}`在全部校验通过后才创建目录（失败无目录副作用）：root必须绝对、仓库外、链路无符号链接；目标不存在或为空目录才创建，非空拒绝。`project.importFolder{root,name?}`只登记已存在的真实文件夹（默认名取文件夹名），不移动、不复制、不修改其中任何文件；同一真实路径（按realpath规范化，含大小写/斜杠差异）拒绝重复登记。`project.rename`、`project.setCurrent{id|null}`、`project.remove`、`project.openFolder`均以`expectedRevision`裁决，`openFolder`调用本机打开器并顺带更新最近打开与当前项目。
 - 安全边界：删除项目只移除登记记录，永不删除用户文件；路径含符号链接、落点在代码仓库内或状态文件被篡改一律拒绝（`PROJECT_UNSAFE_PATH` / `PROJECT_STORE_INVALID`）；界面渲染项目名与路径为纯文本，不执行项目目录内容。`workbench:pickDirectory`为系统目录选择IPC，校验请求来源帧，仅返回所选路径或取消，不读取目录内容。
+- 产物按项目归档：`execute()` 在 `beginRun` 时读取 `snapshot.projects.currentId` 并以 `identifier` 规则校验（仅字母数字与 `_`/`-`），把可选 `projectId` 固化进 run 记录（`runView` 与 state 白名单同步，旧 run 无该字段仍兼容）；产物写入 `outputs/<company>/<user>/<projectId>/`，无当前项目时写入 `outputs/<company>/<user>/unassigned/`。归档目录始终在 `dataDir` 内，**不写入项目 root 文件夹**（项目仍只是目录登记）；`storedArtifact`/`artifactMetadata` 的 `within(outputRoot)` 判定与 `artifact.open`、失败清理的相对路径校验天然覆盖子目录，越界/符号链接/跨用户仍拒绝。身份切换后新身份无此项目归属，run 不带 `projectId`。
 
 ## M9 多模态任务附件（2026-11-17）
 

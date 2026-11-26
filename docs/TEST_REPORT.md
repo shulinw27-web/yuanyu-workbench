@@ -1,5 +1,11 @@
 # 测试与回归报告
 
+## 2026-11-26 M8 产物按当前项目归档（本机部分）
+
+范围：补齐唯一清单 M8 边界（PLAN.md 第 164 行）“任务产物固定输出目录、按项目归档产物”缺口。`src/controller.mjs` 在 `execute()` 读取当前项目 `currentId` 并把可选 `projectId` 固化进 run 记录，产物写入 `outputs/<company>/<user>/<projectId>/`（无项目走 `unassigned/`）；`src/core/workspace.mjs` 的 `beginRun` / `runView` / `validateState` 接受并校验 `projectId`，旧 run 无该字段仍兼容。归档始终在 `dataDir` 内，不写入项目 root 文件夹；产物校验与打开仍以输出根为 base，`within` 与相对路径判定天然覆盖子目录，越界/符号链接/跨用户边界不变。
+
+命令与结果（Node v24.14.1 / Windows）：`npm test` **244/244 通过、无跳过**（新增 2 项：workspace 层 projectId 校验往返 + 子目录产物归属与跨用户拒绝、controller 层无项目/当前项目/跨身份的 run 归属；另修复 file-url 测试改为显式构造盘符大小写，摆脱 cwd 盘符依赖，连续六轮复跑全绿）；`npm run test:desktop` **8/8 阶段通过**，主进程阶段设当前项目后断言完成 run 的 `projectId` 与产物落在 `<dataDir>/outputs/mock-acme/alice/<projectId>/`、且不在项目文件夹内，UI 阶段项目列表断言改为针对“界面回归项目”本身（容忍归档项目共存）；`npm run check` 通过。全部合成数据，未连接外部站点、未调用真实模型。边界：项目级记忆范围仍未接入；真实使用价值（是否按项目组织）需用户反馈，不以本机回归替代。
+
 ## 2026-11-18 W13 自定义站点安全 GET 按钮规则配置（本机部分）
 
 范围：补齐唯一清单 §9 W13“安全GET按钮规则配置/自定义站点按钮授权入口”缺口。`src/sites/registry.mjs` 在字段白名单与持久化中新增 `queryKeys`/`readOnlyActions`，与 `src/browser/interactive-policy.mjs` 共用导出的校验函数；`src/controller.mjs` 构造受控浏览器时把规则随自定义站点透传；`src/ui/index.html` 与 `src/ui/app.js` 增加规则填写、回填、解析与列表展示。旧站点缺少字段时默认为空，不放大任何权限：按钮未命中规则仍返回 `WRITE_CONFIRM_REQUIRED`，命中后仍须同源、已允许路径、非敏感查询参数、GET 表单/链接与人工登录边界。

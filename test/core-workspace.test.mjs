@@ -262,6 +262,33 @@ test('artifact metadata is verified against the current identity output folder a
   await assert.rejects(bob.updateRun(bobRun.id, { status: 'completed', artifact }), { code: 'UNSAFE_ARTIFACT' });
 });
 
+test('run carries a validated optional project id; artifacts in the project subfolder stay within identity boundaries', async (t) => {
+  const { dataDir, alice, bob } = await fixture(t);
+  await assert.rejects(alice.beginRun({ month: '2026-10', projectId: '../evil' }), { code: 'INVALID_INPUT' });
+  await assert.rejects(alice.beginRun({ month: '2026-10', projectId: 'bad id' }), { code: 'INVALID_INPUT' });
+  const projectId = '550e8400e29b41d4a716446655440000';
+  const run = await alice.beginRun({ month: '2026-10', projectId });
+  assert.equal(run.projectId, projectId);
+  assert.equal((await alice.snapshot()).runs.find((r) => r.id === run.id).projectId, projectId);
+  const output = path.join(dataDir, 'outputs', 'mock-acme', 'alice', projectId);
+  await fs.mkdir(output, { recursive: true });
+  const csvPath = path.join(output, 'report.csv');
+  const body = 'order_id,amount_cents\nSYNTHETIC_001,530000\n';
+  await fs.writeFile(csvPath, body);
+  const artifact = { path: csvPath, name: 'report.csv', mime: 'text/csv', bytes: Buffer.byteLength(body),
+    sha256: createHash('sha256').update(body).digest('hex') };
+  const done = await alice.updateRun(run.id, { status: 'completed', artifact, summary: summary() });
+  assert.equal(done.artifact.path, csvPath);
+  // Another user's subfolder — even with a matching digest — is outside this user's output root.
+  const bobOutput = path.join(dataDir, 'outputs', 'mock-acme', 'bob', projectId);
+  await fs.mkdir(bobOutput, { recursive: true });
+  const bobRun = await bob.beginRun({ month: '2026-10' });
+  await assert.rejects(bob.updateRun(bobRun.id, { status: 'completed', artifact: { ...artifact, path: csvPath } }), { code: 'UNSAFE_ARTIFACT' });
+  // A legacy run without a project id still round-trips without one.
+  const legacy = await alice.beginRun({ month: '2026-09' });
+  assert.equal(legacy.projectId, undefined);
+});
+
 test('publication signatures reject template version drift and forged publisher identity', async (t) => {
   const { dataDir, alice, bob } = await fixture(t);
   const { publication } = await published(alice);

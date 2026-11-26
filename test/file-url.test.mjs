@@ -8,12 +8,14 @@ const uiPath = join(process.cwd(), 'src', 'ui', 'index.html');
 const uiUrl = pathToFileURL(uiPath).href;
 
 // Electron canonicalizes Windows drive letters on load; import.meta.url may keep them lowercase.
+// Build both variants explicitly so the test does not depend on cwd drive-letter casing.
 test('同一本机文件 URL 的盘符大小写差异视为相同来源', () => {
   if (process.platform !== 'win32') return;
-  const canonical = uiUrl.replace(/^file:\/\/\/([a-z]):/i, (_m, drive) => `file:///${drive.toUpperCase()}:`);
-  assert.notEqual(canonical, uiUrl);
-  assert.equal(isSameFileUrl(canonical, uiUrl), true);
-  assert.equal(isSameFileUrl(uiUrl, canonical), true);
+  const lower = uiUrl.replace(/^file:\/\/\/([a-z]):/i, (_m, drive) => `file:///${drive.toLowerCase()}:`);
+  const upper = uiUrl.replace(/^file:\/\/\/([a-z]):/i, (_m, drive) => `file:///${drive.toUpperCase()}:`);
+  assert.notEqual(lower, upper);
+  assert.equal(isSameFileUrl(upper, lower), true);
+  assert.equal(isSameFileUrl(lower, upper), true);
 });
 
 test('不同本机文件或非 file URL 不视为相同来源', () => {

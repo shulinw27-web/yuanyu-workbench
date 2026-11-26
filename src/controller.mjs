@@ -60,6 +60,9 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
   const trustedSites=builtinSites.map(site=>({...site,builtin:true,revision:1}));
   const agentSites=async()=>[...trustedSites,...await siteRegistry.list()];
   const modelFile=()=>join(dataDir,'models',identity.companyId,identity.userId,'model.local.json');
+  // 产物按当前项目归档在 dataDir 内（不写入项目文件夹）；无当前项目时归入固定兼容桶。
+  const artifactDir=(owner,projectId)=>join(dataDir,'outputs',owner.companyId,owner.userId,projectId||'unassigned');
+  const outputRoot=owner=>join(dataDir,'outputs',owner.companyId,owner.userId);
   const systemDictionary=sites=>({...systems,...Object.fromEntries(sites.map(site=>[site.id,{id:site.id,label:site.label,origin:site.origin,url:site.origin+site.entryPath}]))});
   const initialize = async () => {
     siteRegistry=createSiteRegistry({dataDir,identity});customSites=await siteRegistry.list();currentSystems=systemDictionary(customSites);workspace = await createWorkspace({dataDir,cryptoAdapter,identity,systems:currentSystems});profiles=createModelProfiles({dataDir,identity,cryptoAdapter});
@@ -176,10 +179,13 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
     const acceptedPlan=pending;pending=null;starting=true;
     let resolveStarting;
     const startup={cancelled:false,settled:new Promise(resolve=>{resolveStarting=resolve;})};startPending=startup;
-    const owner=identity, target=workspace;
+    const owner=identity, target=workspace, projects=projectStore;
     try {
       if(payload.workflowId){const selected=(await target.snapshot()).workflows.find(w=>w.id===payload.workflowId);if(!selected||!selected.enabled||selected.version!==acceptedPlan.workflowVersion)throw new Error('PLAN_STALE');}
-      const run = await target.beginRun(payload);
+      const projectView=await projects.snapshot();
+      if(owner!==identity||projects!==projectStore||switching)throw new Error('CANCELLED');
+      const projectId=projectView.currentId;
+      const run = await target.beginRun({month:payload.month,...(payload.workflowId!==undefined?{workflowId:payload.workflowId}:{}),...(projectId?{projectId}:{})});
       if(startup.cancelled){await target.updateRun(run.id,{status:'cancelled',error:{code:'CANCELLED',message:messages.CANCELLED}});await notify();return {runId:run.id};}
       const driver=createBrowserDriver({BrowserWindow,systems,show:browserShow});
       const token={id:run.id,owner,target,driver,cancelled:false,promise:null};active=token;starting=false;
@@ -201,14 +207,14 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
             await step(systemId,label,'completed','已通过实际 Mock 网页读取与月份核对');
           }
           await step('report','核对并生成资料草稿','running');
-          const outputDir=join(dataDir,'outputs',owner.companyId,owner.userId);
+          const outputDir=artifactDir(owner,projectId);
           await mkdir(outputDir,{recursive:true});await checkpoint();
           const report=await buildMonthlyReport({...readings,month:payload.month,outputDir});producedArtifact=report.artifact;await checkpoint();
           await step('report','核对并生成资料草稿','completed');
           await target.updateRun(run.id,{status:'completed',artifact:report.artifact,summary:report.summary,steps});
         } catch(error) {
           if(producedArtifact) {
-            const base=await realpath(join(dataDir,'outputs',owner.companyId,owner.userId));
+            const base=await realpath(outputRoot(owner));
             for(const file of [producedArtifact.path,producedArtifact.sourcePath].filter(Boolean)) {
               try {const actual=await realpath(file);const offset=relative(base,actual);if(offset && !offset.startsWith('..') && !isAbsolute(offset) && !(await lstat(file)).isSymbolicLink())await unlink(actual);} catch { /* a failed run never exposes an unverified artifact */ }
             }
@@ -401,7 +407,7 @@ export async function createController({dataDir,cryptoAdapter,systems,BrowserWin
         const run=(await workspace.snapshot()).runs.find(r=>r.id===payload.runId && r.status==='completed');
         const file=payload.source?run?.artifact?.sourcePath:run?.artifact?.path;
         if(typeof file!=='string')throw new Error('ARTIFACT_NOT_FOUND');
-        const base=await realpath(join(dataDir,'outputs',identity.companyId,identity.userId));
+        const base=await realpath(outputRoot(identity));
         const actual=await realpath(file);const offset=relative(base,actual);
         if(!offset || offset.startsWith('..') || isAbsolute(offset) || (await lstat(file)).isSymbolicLink())throw new Error('ARTIFACT_NOT_FOUND');
         await openPath(resolve(actual));return {opened:true};

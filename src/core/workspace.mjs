@@ -290,7 +290,7 @@ function storedArtifact(input, root, identity) {
 
 function runView(run) {
   const result = {};
-  for (const key of ['id', 'month', 'workflowId', 'workflowVersion', 'status', 'steps', 'createdAt', 'updatedAt', 'finishedAt', 'artifact', 'summary', 'error']) {
+  for (const key of ['id', 'month', 'workflowId', 'workflowVersion', 'status', 'steps', 'createdAt', 'updatedAt', 'finishedAt', 'artifact', 'summary', 'error', 'projectId']) {
     if (run[key] !== undefined) result[key] = clone(run[key]);
   }
   return result;
@@ -404,9 +404,10 @@ async function context(root, identity, systems) {
       assert(state.workflows.some((workflow) => workflow.id === entry.workflowId), 'STORE_INVALID', '技能历史没有所属技能。');
     }
     for (const run of state.runs) {
-      fields(run, ['id', 'month', 'workflowId', 'workflowVersion', 'status', 'steps', 'createdAt', 'updatedAt', 'finishedAt', 'artifact', 'summary', 'error', 'sessionId']);
+      fields(run, ['id', 'month', 'workflowId', 'workflowVersion', 'status', 'steps', 'createdAt', 'updatedAt', 'finishedAt', 'artifact', 'summary', 'error', 'sessionId', 'projectId']);
       identifier(run.id);
       month(run.month);
+      if (run.projectId !== undefined) identifier(run.projectId);
       if (run.workflowId !== undefined) {
         identifier(run.workflowId);
         revisionNumber(run.workflowVersion);
@@ -601,14 +602,16 @@ export function createWorkspace({ dataDir, cryptoAdapter, identity: inputIdentit
     },
     beginRun(input) {
       return operation(async ({ state, save }) => {
-        fields(input, ['month', 'workflowId']);
+        fields(input, ['month', 'workflowId', 'projectId']);
         month(input.month);
+        if (input.projectId !== undefined) identifier(input.projectId);
         const workflow = input.workflowId !== undefined ? findWorkflow(state, input.workflowId) : undefined;
         assert(!workflow || workflow.enabled, 'WORKFLOW_DISABLED', '此技能已停用，请先启用后再运行。');
         assert(!state.runs.some((run) => run.status === 'running'), 'RUN_ACTIVE', '当前用户已有运行中的任务。');
         const timestamp = now();
         const run = { id: randomUUID(), month: input.month, status: 'running', steps: [], createdAt: timestamp, updatedAt: timestamp, sessionId: root.sessionId };
         if (workflow) Object.assign(run, { workflowId: workflow.id, workflowVersion: workflow.version });
+        if (input.projectId !== undefined) run.projectId = input.projectId;
         state.runs.push(run);
         await save();
         return runView(run);

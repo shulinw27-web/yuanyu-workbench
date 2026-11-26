@@ -136,3 +136,22 @@ test('项目动作经控制器走动作通道：导入与新建、打开位置�
   snap=await controller.snapshot();
   assert.equal(snap.projects.projects.length,0,'跨身份项目必须隔离');
 });
+
+test('任务归属当前项目并固化在run记录；无当前项目与跨身份隔离保持旧兼容',async t=>{
+  const {controller}=await fixture(t);
+  const folder=await mkdtemp(join(tmpdir(),'yuanyu-ctl-archive-'));t.after(()=>rm(folder,{recursive:true,force:true}));
+  const runFor=async month=>{
+    await controller.invoke('task.plan',{text:'采购月报',month});
+    const started=await controller.invoke('task.run',{month});await controller.waitForIdle();
+    return (await controller.snapshot()).runs.find(r=>r.id===started.runId);
+  };
+  // 无当前项目：run 不带 projectId（旧 run 兼容）。
+  assert.equal((await runFor('2026-10')).projectId,undefined);
+  // 设当前项目：新 run 固化该项目 id。
+  const project=await controller.invoke('project.createEmpty',{name:'归档项目',root:join(folder,'子项目')});
+  const assigned=await runFor('2026-09');
+  assert.equal(assigned.projectId,project.id);
+  // 跨身份：bob 无此项目，run 不带 projectId，不能继承 alice 的归属。
+  await controller.invoke('identity.switch',{userId:'bob'});
+  assert.equal((await runFor('2026-10')).projectId,undefined);
+});
